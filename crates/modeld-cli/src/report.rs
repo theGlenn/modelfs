@@ -89,6 +89,60 @@ fn render_group(out: &mut String, outcome: &ScanOutcome, group: &DuplicateGroup)
     );
 }
 
+/// Renders the dedupe plan: what will (or would) be replaced by clones.
+pub fn render_plan(
+    replacements: &[modeld_core::consolidate::Replacement],
+    dry_run: bool,
+) -> String {
+    let mut out = String::new();
+    let verb = if dry_run {
+        "Would replace"
+    } else {
+        "Replacing"
+    };
+    let total: u64 = replacements.iter().map(|r| r.size).sum();
+    for replacement in replacements {
+        let _ = writeln!(
+            out,
+            "{verb} {}\n     with clone of {}  ({})",
+            replacement.victim.display(),
+            replacement.canonical.display(),
+            human_bytes(replacement.size)
+        );
+    }
+    let _ = writeln!(
+        out,
+        "{} replacement(s), {} reclaimable",
+        replacements.len(),
+        human_bytes(total)
+    );
+    out
+}
+
+/// Renders the result of a consolidate or restore run.
+pub fn render_consolidation(report: &modeld_core::consolidate::Report, verb: &str) -> String {
+    let mut out = String::new();
+    for path in &report.completed {
+        let _ = writeln!(out, "ok  {}", path.display());
+    }
+    for refusal in &report.refused {
+        let _ = writeln!(
+            out,
+            "SKIP {}  ({})",
+            refusal.victim.display(),
+            refusal.reason
+        );
+    }
+    let _ = writeln!(
+        out,
+        "{verb} {} across {} file(s); {} skipped",
+        human_bytes(report.bytes_affected),
+        report.completed.len(),
+        report.refused.len()
+    );
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,4 +1,8 @@
+#[cfg(target_os = "macos")]
+pub mod apfs;
 pub mod artifact;
+#[cfg(target_os = "macos")]
+pub mod consolidate;
 pub mod dedup;
 pub mod digest;
 

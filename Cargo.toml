@@ -46,3 +46,4 @@ hex = "0.4"
 clap = { version = "4", features = ["derive"] }
 walkdir = "2"
 tempfile = "3"
+libc = "0.2"
