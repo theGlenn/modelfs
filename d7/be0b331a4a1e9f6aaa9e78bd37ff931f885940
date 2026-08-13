@@ -1,0 +1,84 @@
+crates/modeld-providers/src/ollama.rs
+  s_ffaa3624dfd97d::t_ba1ce19da8daf3 13-14,24
+  s_ffaa3624dfd97d::t_aa87b230dee57c 1,4,7,10-12,15-23,25-32,127-130,133-134,137-142,181-182
+  s_ffaa3624dfd97d::t_ee6d5ce1edd7f0 2-3,6,8-9,33-126,131-132,135-136,143-180
+  s_ffaa3624dfd97d::t_851b5be6bcb0f3 5
+crates/modeld-providers/src/lib.rs
+  s_ffaa3624dfd97d::t_ea75fcf25fefac 1-10,12-17,20-24,26-38,40
+  s_ffaa3624dfd97d::t_1f27005ac6ea14 11,18-19
+  s_ffaa3624dfd97d::t_fb7ca5b776835e 39
+  s_ffaa3624dfd97d::t_ba1ce19da8daf3 25
+crates/modeld-cli/src/main.rs
+  s_ffaa3624dfd97d::t_ab2be93da11904 1-2,5-15,22-23,25-26,28-30,32-34,36-37,43-45,54,64
+  s_ffaa3624dfd97d::t_cfbdd33e3467dd 3-4,16-21,27,38-42,46-48,50-52,55-63
+  s_ffaa3624dfd97d::t_5f439c836c0fbc 24,31,35,49,53
+crates/modeld-core/src/digest.rs
+  s_ffaa3624dfd97d::t_04a5f31ec35134 68-71
+  s_ffaa3624dfd97d::t_8f4d3d53523b24 85-87
+  s_ffaa3624dfd97d::t_89cd1d74f6fbf6 1-23,25-32,34-67,72-84,88-91,93-96,98-101,103-107,111-208
+  s_ffaa3624dfd97d::t_ba1ce19da8daf3 24,33,92,97,102
+  s_ffaa3624dfd97d::t_9e39b169458ccd 108-110
+Cargo.toml
+  s_ffaa3624dfd97d::t_adfe05f7b4eaf7 47-48
+  s_ffaa3624dfd97d::t_990378f8b82afb 1-13,37-46
+  s_ffaa3624dfd97d::t_490edec36a909b 14-36
+crates/modeld-cli/src/report.rs
+  s_ffaa3624dfd97d::t_ba1ce19da8daf3 34-38,56-60,85-89
+  s_ffaa3624dfd97d::t_928eaf7ccf3b7c 24
+  s_ffaa3624dfd97d::t_e18ee705f17c50 7-11
+  s_ffaa3624dfd97d::t_f8c0cbfd12d73f 1-6,12-23,25-33,39-55,61-84,90-102
+crates/modeld-core/Cargo.toml
+  s_ffaa3624dfd97d::t_cd09768b59165c 1-6,10-17
+  s_ffaa3624dfd97d::t_a1b930adc75cf9 7-9
+crates/modeld-providers/src/lmstudio.rs
+  s_ffaa3624dfd97d::t_62d4eaacc1c2d9 1-4,7-9,11-18,92
+  s_ffaa3624dfd97d::t_7f05713bc6140e 5
+  s_ffaa3624dfd97d::t_ba1ce19da8daf3 10
+  s_ffaa3624dfd97d::t_e0830de394e66b 6,19-91
+crates/modeld-cli/Cargo.toml
+  s_ffaa3624dfd97d::t_7c3419928fa045 1-6,10-17
+  s_ffaa3624dfd97d::t_1a0f58daf90de6 7-9
+crates/modeld-providers/Cargo.toml
+  s_ffaa3624dfd97d::t_cb3d1d9fcfbdb4 1-6,10-11
+  s_ffaa3624dfd97d::t_b875de22103de8 7-9,12-17
+.gitignore
+  s_ffaa3624dfd97d::t_7831f1e13feae7 1-2
+  s_ffaa3624dfd97d::t_540ade28d9deb0 3-7
+crates/modeld-providers/src/scan.rs
+  s_ffaa3624dfd97d::t_ba1ce19da8daf3 35,42,62,107-112
+  s_ffaa3624dfd97d::t_add0e550e55bc6 1-34,36-41,43-61,63-106,113-178
+crates/modeld-core/src/dedup.rs
+  s_ffaa3624dfd97d::t_ba1ce19da8daf3 40,58,86
+  s_ffaa3624dfd97d::t_7b0e00a19b2ecd 1-39,41-57,59-80,82-85,87-195
+  s_ffaa3624dfd97d::t_f0d869181ad776 81
+crates/modeld-core/src/lib.rs
+  s_ffaa3624dfd97d::t_459fc223c081e1 1,3-4,8
+  s_ffaa3624dfd97d::t_cb4fcfdd50099b 2,5-7
+crates/modeld-core/src/artifact.rs
+  s_ffaa3624dfd97d::t_ce3bc929966dc6 1,30-46,55-58
+  s_ffaa3624dfd97d::t_86ee8632ed8696 2-29,47-54,59
+crates/modeld-providers/src/huggingface.rs
+  s_ffaa3624dfd97d::t_7361ffa9d03318 1-5,8,10-12,16-27,29-39,125-128,132-134,136-138,140,150,193-194
+  s_ffaa3624dfd97d::t_8b320dad06c277 6
+  s_ffaa3624dfd97d::t_fb7ca5b776835e 15,107
+  s_ffaa3624dfd97d::t_daf3d8f99d8b17 7,9,40-106,108-124,129-131,135,139,141-149,151-163,169-184
+  s_ffaa3624dfd97d::t_ba1ce19da8daf3 13-14,28,164-168,185-192
+Cargo.lock
+  s_ffaa3624dfd97d::t_0496d6a087e951 1-485
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "d7be0b331a4a1e9f6aaa9e78bd37ff931f885940",
+  "prompts": {},
+  "sessions": {
+    "s_ffaa3624dfd97d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "393ec917-ce4f-4896-93c5-c11f85ee8bf9",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Glenn Sonna <kenpachi.os@gmail.com>"
+    }
+  }
+}
