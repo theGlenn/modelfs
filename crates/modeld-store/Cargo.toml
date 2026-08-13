@@ -1,5 +1,5 @@
 [package]
-name = "modeld-cli"
+name = "modeld-store"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,12 +7,11 @@ license.workspace = true
 [lints]
 workspace = true
 
-[[bin]]
-name = "modeld"
-path = "src/main.rs"
-
 [dependencies]
 modeld-core.workspace = true
-modeld-providers.workspace = true
-modeld-store.workspace = true
-clap.workspace = true
+rusqlite.workspace = true
+thiserror.workspace = true
+libc.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

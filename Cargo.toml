@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/modeld-core",
     "crates/modeld-providers",
+    "crates/modeld-store",
     "crates/modeld-cli",
 ]
 
@@ -37,6 +38,7 @@ unused_result_ok = "warn"
 [workspace.dependencies]
 modeld-core = { path = "crates/modeld-core" }
 modeld-providers = { path = "crates/modeld-providers" }
+modeld-store = { path = "crates/modeld-store" }
 anyhow = "1"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
@@ -47,3 +49,8 @@ clap = { version = "4", features = ["derive"] }
 walkdir = "2"
 tempfile = "3"
 libc = "0.2"
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# sha2 at ~20 MB/s in debug builds makes sync unusable; hashing must always be fast.
+[profile.dev.package.sha2]
+opt-level = 3

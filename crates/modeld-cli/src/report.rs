@@ -143,6 +143,98 @@ pub fn render_consolidation(report: &modeld_core::consolidate::Report, verb: &st
     out
 }
 
+/// Renders the `ls` table: stored artifacts and which providers use them.
+pub fn render_ls(
+    artifacts: &[modeld_store::StoredArtifact],
+    totals: modeld_store::Totals,
+) -> String {
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "{:<52} {:<12} {:>9}  USED BY",
+        "MODEL", "FORMAT", "SIZE"
+    );
+    for artifact in artifacts {
+        let label = artifact
+            .references
+            .iter()
+            .find_map(|r| r.label.clone())
+            .unwrap_or_else(|| short_digest(&artifact.digest.to_string()));
+        let mut providers: Vec<&str> = artifact
+            .references
+            .iter()
+            .map(|r| r.provider.as_str())
+            .collect();
+        providers.sort_unstable();
+        providers.dedup();
+        let _ = writeln!(
+            out,
+            "{:<52} {:<12} {:>9}  {}",
+            truncate(&label, 52),
+            artifact.format.as_deref().unwrap_or("-"),
+            human_bytes(artifact.size),
+            if providers.is_empty() {
+                "-".to_string()
+            } else {
+                providers.join(", ")
+            }
+        );
+    }
+    let _ = writeln!(out);
+    out.push_str(&render_totals(totals));
+    out
+}
+
+/// Renders the storage accounting footer.
+pub fn render_totals(totals: modeld_store::Totals) -> String {
+    let saved = totals.logical_bytes.saturating_sub(totals.physical_bytes);
+    format!(
+        "Physical usage:  {}\nLogical usage:   {}\nDeduplicated:    {}\n",
+        human_bytes(totals.physical_bytes),
+        human_bytes(totals.logical_bytes),
+        human_bytes(saved)
+    )
+}
+
+/// Renders `where` results: canonical blob plus every reference.
+pub fn render_where(
+    matches: &[modeld_store::StoredArtifact],
+    store: &modeld_store::Store,
+) -> String {
+    let mut out = String::new();
+    for artifact in matches {
+        let _ = writeln!(out, "{}", artifact.digest);
+        let _ = writeln!(
+            out,
+            "  Canonical: {}",
+            store.blob_path(&artifact.digest).display()
+        );
+        let _ = writeln!(out, "  Referenced by:");
+        for reference in &artifact.references {
+            let _ = writeln!(
+                out,
+                "    {:<12} {}",
+                reference.provider,
+                reference.path.display()
+            );
+        }
+    }
+    out
+}
+
+fn short_digest(digest: &str) -> String {
+    digest.chars().take(19).collect()
+}
+
+fn truncate(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        text.to_string()
+    } else {
+        let head: String = text.chars().take(max - 1).collect();
+        format!("{head}…")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
