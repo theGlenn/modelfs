@@ -1,0 +1,43 @@
+crates/modeld-core/src/apfs.rs
+  s_ffaa3624dfd97d::t_b3c6b62dc499a2 1-59,61-104
+  s_ffaa3624dfd97d::t_8e4604226f8f89 60
+crates/modeld-core/Cargo.toml
+  s_ffaa3624dfd97d::t_a401b5e2a23f2b 13,17-18
+  s_ffaa3624dfd97d::t_3ee16bb3a69611 19
+crates/modeld-cli/src/main.rs
+  s_ffaa3624dfd97d::t_f264e9524caa08 2,4,24-34,41-42,65-85,89-122,127-128,130-131,133
+  s_ffaa3624dfd97d::t_8e4604226f8f89 132
+crates/modeld-cli/src/plan.rs
+  s_ffaa3624dfd97d::t_8e4604226f8f89 64
+  s_ffaa3624dfd97d::t_129f480aeb2336 1-63,65-81
+Cargo.toml
+  s_ffaa3624dfd97d::t_ec30873503aaaf 49
+crates/modeld-core/src/lib.rs
+  s_ffaa3624dfd97d::t_0fce7e1dfd5876 1-2,4-5
+crates/modeld-cli/src/report.rs
+  s_ffaa3624dfd97d::t_c85a6854689182 92,97,103-128,135-145
+  s_ffaa3624dfd97d::t_8e4604226f8f89 93-96,98-102,129-134
+crates/modeld-core/src/consolidate.rs
+  s_ffaa3624dfd97d::t_3dccba9e4147b0 1-32,34-67,71-140,142-169,174-200,202-219,221-266,273-279,281-301,308-356,358-360,362-391,393-454,456-473,475-487
+  s_ffaa3624dfd97d::t_df26812692f770 455,474
+  s_ffaa3624dfd97d::t_8e4604226f8f89 33,141,170-173,302-307,392
+  s_ffaa3624dfd97d::t_0f3d5719bd8de5 68-70,201,220,267-272,280,357,361
+Cargo.lock
+  s_ffaa3624dfd97d::t_22e9d19d233736 244,246
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "75d724e3779b66a06fbb4fc4abf19e26085d93c5",
+  "prompts": {},
+  "sessions": {
+    "s_ffaa3624dfd97d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "393ec917-ce4f-4896-93c5-c11f85ee8bf9",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Glenn Sonna <kenpachi.os@gmail.com>"
+    }
+  }
+}
