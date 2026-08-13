@@ -1,0 +1,17 @@
+[package]
+name = "modeld-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "modeld"
+path = "src/main.rs"
+
+[dependencies]
+modeld-core.workspace = true
+modeld-providers.workspace = true
+clap.workspace = true
