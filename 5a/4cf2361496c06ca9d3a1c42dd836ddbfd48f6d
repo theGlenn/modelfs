@@ -1,0 +1,40 @@
+crates/modeld-providers/src/huggingface.rs
+  s_ffaa3624dfd97d::t_0ff5a26285b60e 22,180
+crates/modeld-providers/src/ollama.rs
+  s_ffaa3624dfd97d::t_0ff5a26285b60e 19,169
+crates/modeld-cli/src/main.rs
+  s_ffaa3624dfd97d::t_e2fa9e50c12450 64-68,72,312-316,320
+crates/modeld-providers/src/scan.rs
+  s_ffaa3624dfd97d::t_0ff5a26285b60e 50,80-117
+  s_ffaa3624dfd97d::t_597490b3dcd1d4 118-120
+crates/modeld-providers/src/lib.rs
+  s_ffaa3624dfd97d::t_83c600aac20a46 3,8,22-24,27-37,39,41-57
+crates/modeld-providers/Cargo.toml
+  s_ffaa3624dfd97d::t_d3c9ce719f84b2 15-16
+crates/modeld-providers/src/config.rs
+  s_ffaa3624dfd97d::t_09f4df72a6fa7f 55
+  s_ffaa3624dfd97d::t_24221f4cd6509c 86-88
+  s_ffaa3624dfd97d::t_49a4fd26d80284 1-54,56-85,89-140
+crates/modeld-providers/src/lmstudio.rs
+  s_ffaa3624dfd97d::t_458fa53369e741 6,18,24,47
+Cargo.toml
+  s_ffaa3624dfd97d::t_d3c9ce719f84b2 53-54
+Cargo.lock
+  s_ffaa3624dfd97d::t_07d2eb5566ad20 173-178,234-239,249-254,261,276-285,354,359,495-503,588-628,693-701
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "5a4cf2361496c06ca9d3a1c42dd836ddbfd48f6d",
+  "prompts": {},
+  "sessions": {
+    "s_ffaa3624dfd97d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "393ec917-ce4f-4896-93c5-c11f85ee8bf9",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Glenn Sonna <kenpachi.os@gmail.com>"
+    }
+  }
+}
