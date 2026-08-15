@@ -61,12 +61,15 @@ fn main() {
 }
 
 fn doctor() {
-    let roots = modeld_providers::detect_all();
-    if roots.is_empty() {
+    let detection = modeld_providers::detect_all();
+    for warning in &detection.warnings {
+        eprintln!("warning: {warning}");
+    }
+    if detection.roots.is_empty() {
         println!("No known model providers detected.");
         return;
     }
-    for provider in roots {
+    for provider in detection.roots {
         println!(
             "{:<12} {}",
             format!("{:?}", provider.kind),
@@ -306,12 +309,15 @@ fn ensure_verified_digest(store: &Store, artifact: &mut Artifact) -> bool {
 }
 
 fn scan_providers(min_size: u64) -> Option<ScanOutcome> {
-    let roots = modeld_providers::detect_all();
-    if roots.is_empty() {
+    let detection = modeld_providers::detect_all();
+    for warning in &detection.warnings {
+        eprintln!("warning: {warning}");
+    }
+    if detection.roots.is_empty() {
         println!("No known model providers detected — nothing to do.");
         return None;
     }
-    Some(modeld_providers::scan::scan(&roots, min_size))
+    Some(modeld_providers::scan::scan(&detection.roots, min_size))
 }
 
 fn scan_and_hash(min_size: u64) -> Option<ScanOutcome> {

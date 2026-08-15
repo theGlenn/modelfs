@@ -47,6 +47,7 @@ pub fn scan(roots: &[ProviderRoot], min_size: u64) -> ScanOutcome {
             ProviderKind::Ollama => ollama::collect(root, min_size, &mut outcome),
             ProviderKind::HuggingFace => huggingface::collect(root, min_size, &mut outcome),
             ProviderKind::LmStudio => lmstudio::collect(root, min_size, &mut outcome),
+            ProviderKind::Manual => collect_model_tree(root, min_size, &mut outcome),
             _ => {}
         }
     }
@@ -73,6 +74,47 @@ pub fn hash_for_dedup(outcome: &mut ScanOutcome, mut progress: impl FnMut(&Path,
                 reason: format!("hash failed: {error}"),
             }),
         }
+    }
+}
+
+/// Collects recognized model files from a plain directory tree.
+///
+/// Shared by LM Studio and Manual (configured) roots: format-filtered walk, no
+/// digests (computed on demand later), labels made from the root-relative path
+/// prefixed with the root's `label_prefix` when set. Symlinks are skipped — a
+/// symlinked model file already shares storage with its target.
+pub fn collect_model_tree(root: &crate::ProviderRoot, min_size: u64, outcome: &mut ScanOutcome) {
+    for entry in walkdir::WalkDir::new(&root.root)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|e| !root.excluded.iter().any(|ex| e.path().starts_with(ex)))
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().is_file())
+    {
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        if metadata.len() < min_size {
+            continue;
+        }
+        let path = entry.path().to_path_buf();
+        let Some(format) = detect_format(&path) else {
+            continue;
+        };
+        let label = path.strip_prefix(&root.root).ok().map(|rel| {
+            root.label_prefix.as_deref().map_or_else(
+                || rel.display().to_string(),
+                |prefix| format!("{prefix}/{}", rel.display()),
+            )
+        });
+        outcome.artifacts.push(artifact_from_file(
+            path,
+            &metadata,
+            root.kind,
+            Some(format),
+            None,
+            label,
+        ));
     }
 }
 

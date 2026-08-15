@@ -3,7 +3,7 @@
 //! staging downloads; never scanned. See providers/lmstudio.md.
 
 use crate::ProviderRoot;
-use crate::scan::{ScanOutcome, artifact_from_file, detect_format};
+use crate::scan::{ScanOutcome, collect_model_tree};
 use modeld_core::ProviderKind;
 use std::path::Path;
 
@@ -15,45 +15,13 @@ pub fn detect(home: &Path) -> Option<ProviderRoot> {
         kind: ProviderKind::LmStudio,
         root: models,
         excluded: vec![base.join(".internal"), base.join("hub")],
+        label_prefix: None,
     })
 }
 
 /// Collects model files from the LM Studio models tree.
-///
-/// Only files with a recognized model format are included: LM Studio trees also hold
-/// sidecar configs and app droppings that are not model weights. Symlinks are skipped
-/// — a symlinked model file already shares storage with its target.
 pub fn collect(root: &ProviderRoot, min_size: u64, outcome: &mut ScanOutcome) {
-    for entry in walkdir::WalkDir::new(&root.root)
-        .follow_links(false)
-        .into_iter()
-        .filter_entry(|e| !root.excluded.iter().any(|ex| e.path().starts_with(ex)))
-        .filter_map(Result::ok)
-        .filter(|e| e.file_type().is_file())
-    {
-        let Ok(metadata) = entry.metadata() else {
-            continue;
-        };
-        if metadata.len() < min_size {
-            continue;
-        }
-        let path = entry.path().to_path_buf();
-        let Some(format) = detect_format(&path) else {
-            continue;
-        };
-        let label = path
-            .strip_prefix(&root.root)
-            .ok()
-            .map(|rel| rel.display().to_string());
-        outcome.artifacts.push(artifact_from_file(
-            path,
-            &metadata,
-            ProviderKind::LmStudio,
-            Some(format),
-            None,
-            label,
-        ));
-    }
+    collect_model_tree(root, min_size, outcome);
 }
 
 #[cfg(test)]
@@ -76,6 +44,7 @@ mod tests {
             kind: ProviderKind::LmStudio,
             root: dir.path().to_path_buf(),
             excluded: vec![],
+            label_prefix: None,
         };
         let mut outcome = ScanOutcome::new();
         collect(&provider, 1024, &mut outcome);

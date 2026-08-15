@@ -16,6 +16,7 @@ pub fn detect(home: &Path) -> Option<ProviderRoot> {
         kind: ProviderKind::Ollama,
         root,
         excluded: vec![],
+        label_prefix: None,
     })
 }
 
@@ -165,6 +166,7 @@ mod tests {
             kind: ProviderKind::Ollama,
             root: root.to_path_buf(),
             excluded: vec![],
+            label_prefix: None,
         };
         let mut outcome = ScanOutcome::new();
         collect(&provider, 1024, &mut outcome);

@@ -19,6 +19,7 @@ pub fn detect(home: &Path) -> Option<ProviderRoot> {
         // but is listed excluded defensively in case of layout drift.
         root: hub,
         excluded: vec![hf_home.join("xet")],
+        label_prefix: None,
     })
 }
 
@@ -176,6 +177,7 @@ mod tests {
             kind: ProviderKind::HuggingFace,
             root: dir.path().to_path_buf(),
             excluded: vec![],
+            label_prefix: None,
         };
         let mut outcome = ScanOutcome::new();
         collect(&provider, 1024, &mut outcome);

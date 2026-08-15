@@ -50,6 +50,8 @@ walkdir = "2"
 tempfile = "3"
 libc = "0.2"
 rusqlite = { version = "0.32", features = ["bundled"] }
+toml = "0.8"
+glob = "0.3"
 
 # sha2 at ~20 MB/s in debug builds makes sync unusable; hashing must always be fast.
 [profile.dev.package.sha2]
