@@ -9,9 +9,10 @@
 //!    that raced the hash.
 //! 4. Clone canonical to a temp name in the victim's directory, re-stat once more,
 //!    then atomically swap temp and victim (`renamex_np` + `RENAME_SWAP`).
-//! 5. Post-verify the swapped-in file by hashing it again; on mismatch swap back.
-//! 6. Restore the victim's original mode and mtime (providers key caches on mtime),
-//!    release the old bytes, journal the replacement.
+//! 5. Verify the temporary clone, atomically swap, then verify that the original
+//!    inode under the temp name did not race the swap.
+//! 6. Durably journal the replacement, restore the victim's original mode and
+//!    mtime (providers key caches on mtime), then release the old bytes.
 //!
 //! Every replacement is journaled so [`restore`] can rebuild fully independent
 //! copies later (undoing the space saving, returning to the pre-dedupe state).
@@ -23,6 +24,7 @@ use std::fs::Metadata;
 use std::io::{Read, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::{Duration, SystemTime};
 
 /// Refuse to touch files written within this window.
@@ -71,7 +73,7 @@ pub struct JournalEntry {
     pub replaced_at_epoch_secs: u64,
 }
 
-/// Append-only JSONL journal of performed replacements.
+/// JSONL journal of performed replacements.
 #[derive(Debug)]
 pub struct Journal {
     path: PathBuf,
@@ -106,18 +108,14 @@ impl Journal {
             .collect()
     }
 
-    /// Appends one entry, flushed before returning.
+    /// Atomically appends one entry, flushed before returning.
     ///
     /// # Errors
-    /// I/O error opening, writing, or flushing the journal file.
+    /// I/O error reading, writing, or flushing the journal file.
     pub fn append(&self, entry: &JournalEntry) -> std::io::Result<()> {
-        let line = serde_json::to_string(entry).map_err(std::io::Error::other)?;
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)?;
-        writeln!(file, "{line}")?;
-        file.sync_all()
+        let mut entries = self.entries()?;
+        entries.push(entry.clone());
+        self.rewrite(&entries)
     }
 
     /// Replaces the journal contents with `entries`.
@@ -130,8 +128,43 @@ impl Journal {
             lines.push_str(&serde_json::to_string(entry).map_err(std::io::Error::other)?);
             lines.push('\n');
         }
-        std::fs::write(&self.path, lines)
+        let (tmp, mut file) = create_journal_temp(&self.path)?;
+        let write_result = (|| {
+            file.write_all(lines.as_bytes())?;
+            file.sync_all()?;
+            std::fs::rename(&tmp, &self.path)?;
+            if let Some(parent) = self.path.parent() {
+                std::fs::File::open(parent)?.sync_all()?;
+            }
+            Ok(())
+        })();
+        if write_result.is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
+        write_result
     }
+}
+
+fn create_journal_temp(path: &Path) -> std::io::Result<(PathBuf, std::fs::File)> {
+    for attempt in 0..1024 {
+        let tmp = path.with_extension(format!(
+            "modeld-rewrite-{}-{attempt}.tmp",
+            std::process::id()
+        ));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+        {
+            Ok(file) => return Ok((tmp, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "too many stale journal rewrite files",
+    ))
 }
 
 /// Executes planned replacements, journaling each success.
@@ -142,15 +175,8 @@ impl Journal {
 pub fn consolidate(replacements: &[Replacement], journal: &Journal) -> Report {
     let mut report = Report::default();
     for replacement in replacements {
-        match replace_with_clone(replacement) {
-            Ok(entry) => {
-                if let Err(error) = journal.append(&entry) {
-                    report.refused.push(Refusal {
-                        victim: replacement.victim.clone(),
-                        reason: format!("replaced but journal write failed: {error}"),
-                    });
-                    continue;
-                }
+        match replace_with_clone(replacement, journal) {
+            Ok(_entry) => {
                 report.completed.push(replacement.victim.clone());
                 report.bytes_affected += replacement.size;
             }
@@ -232,19 +258,32 @@ impl StatSnapshot {
     }
 }
 
-fn replace_with_clone(replacement: &Replacement) -> Result<JournalEntry, String> {
+fn replace_with_clone(
+    replacement: &Replacement,
+    journal: &Journal,
+) -> Result<JournalEntry, String> {
     verify_digest(&replacement.canonical, &replacement.digest, "canonical")?;
 
     let before = StatSnapshot::of(&replacement.victim)?;
     if before.modified_within(RECENT_WRITE_WINDOW) {
         return Err("recently written; may still be downloading".to_string());
     }
+    ensure_no_open_writers(&replacement.victim)?;
     verify_digest(&replacement.victim, &replacement.digest, "victim")?;
     ensure_unchanged(&replacement.victim, before, "during hashing")?;
 
     let tmp = temp_sibling(&replacement.victim)?;
     apfs::clone_file(&replacement.canonical, &tmp)
         .map_err(|error| format!("clonefile failed: {error}"))?;
+    if let Err(reason) = verify_digest(&tmp, &replacement.digest, "temporary clone") {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(reason);
+    }
+    let clone_before_swap = StatSnapshot::of(&tmp)?;
+    if let Err(reason) = ensure_no_open_writers(&replacement.victim) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(reason);
+    }
     if let Err(reason) = ensure_unchanged(&replacement.victim, before, "after cloning") {
         let _ = std::fs::remove_file(&tmp);
         return Err(reason);
@@ -255,23 +294,18 @@ fn replace_with_clone(replacement: &Replacement) -> Result<JournalEntry, String>
     }
 
     // The victim's original bytes now live at `tmp` — instant rollback until released.
-    if let Err(reason) = verify_digest(&replacement.victim, &replacement.digest, "post-swap") {
-        let rollback = apfs::swap_files(&tmp, &replacement.victim);
-        let _ = std::fs::remove_file(&tmp);
-        return Err(match rollback {
-            Ok(()) => format!("{reason}; rolled back"),
-            Err(error) => format!("{reason}; ROLLBACK FAILED: {error}"),
-        });
+    if let Err(reason) = ensure_no_open_writers(&tmp)
+        .and_then(|()| ensure_unchanged(&tmp, before, "immediately before the swap"))
+    {
+        return Err(rollback_swap_if_safe(
+            &tmp,
+            &replacement.victim,
+            clone_before_swap,
+            &reason,
+        ));
     }
 
-    restore_file_attributes(
-        &replacement.victim,
-        before.mode,
-        before.mtime_epoch_secs,
-        before.mtime_nanos,
-    );
-    let _ = std::fs::remove_file(&tmp); // release the old bytes — this frees the space
-    Ok(JournalEntry {
+    let entry = JournalEntry {
         victim: replacement.victim.clone(),
         canonical: replacement.canonical.clone(),
         digest: replacement.digest.clone(),
@@ -282,21 +316,63 @@ fn replace_with_clone(replacement: &Replacement) -> Result<JournalEntry, String>
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs(),
-    })
+    };
+    if let Err(error) = journal.append(&entry) {
+        let reason = format!("journal write failed: {error}");
+        return Err(rollback_swap_if_safe(
+            &tmp,
+            &replacement.victim,
+            clone_before_swap,
+            &reason,
+        ));
+    }
+
+    restore_file_attributes(
+        &replacement.victim,
+        before.mode,
+        before.mtime_epoch_secs,
+        before.mtime_nanos,
+    );
+    let _ = std::fs::remove_file(&tmp); // release the old bytes — this frees the space
+    Ok(entry)
 }
 
 fn restore_entry(entry: &JournalEntry) -> Result<u64, String> {
+    let before = StatSnapshot::of(&entry.victim)?;
+    ensure_no_open_writers(&entry.victim)?;
     verify_digest(&entry.victim, &entry.digest, "journaled file")?;
-    let size = StatSnapshot::of(&entry.victim)?.size;
+    ensure_unchanged(&entry.victim, before, "during restore verification")?;
+    let size = before.size;
 
     let tmp = temp_sibling(&entry.victim)?;
     if let Err(error) = copy_independent(&entry.victim, &tmp) {
         let _ = std::fs::remove_file(&tmp);
         return Err(format!("independent copy failed: {error}"));
     }
+    if let Err(reason) = verify_digest(&tmp, &entry.digest, "independent copy") {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(reason);
+    }
+    let copy_before_swap = StatSnapshot::of(&tmp)?;
+    if let Err(reason) = ensure_no_open_writers(&entry.victim)
+        .and_then(|()| ensure_unchanged(&entry.victim, before, "during restore copy"))
+    {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(reason);
+    }
     if let Err(error) = apfs::swap_files(&tmp, &entry.victim) {
         let _ = std::fs::remove_file(&tmp);
         return Err(format!("atomic swap failed: {error}"));
+    }
+    if let Err(reason) = ensure_no_open_writers(&tmp)
+        .and_then(|()| ensure_unchanged(&tmp, before, "immediately before the restore swap"))
+    {
+        return Err(rollback_swap_if_safe(
+            &tmp,
+            &entry.victim,
+            copy_before_swap,
+            &reason,
+        ));
     }
     let _ = std::fs::remove_file(&tmp); // release the clone
     restore_file_attributes(
@@ -343,6 +419,60 @@ fn ensure_unchanged(path: &Path, before: StatSnapshot, when: &str) -> Result<(),
     } else {
         Err(format!("file changed {when}; aborted untouched"))
     }
+}
+
+fn ensure_no_open_writers(path: &Path) -> Result<(), String> {
+    let output = Command::new("/usr/sbin/lsof")
+        .arg("-Fa")
+        .arg(path)
+        .output()
+        .map_err(|error| format!("cannot check open writers: {error}"))?;
+    // lsof exits 1 when no process has the file open.
+    if !output.status.success() && output.status.code() != Some(1) {
+        return Err(format!(
+            "cannot check open writers (lsof exited {})",
+            output.status
+        ));
+    }
+    let has_writer = output
+        .stdout
+        .split(|byte| *byte == b'\n')
+        .any(|line| line == b"aw" || line == b"au");
+    if has_writer {
+        Err("file has an open writer; aborted untouched".to_string())
+    } else {
+        Ok(())
+    }
+}
+
+fn rollback_swap(tmp: &Path, victim: &Path, reason: &str) -> String {
+    match apfs::swap_files(tmp, victim) {
+        Ok(()) => {
+            let _ = std::fs::remove_file(tmp);
+            format!("{reason}; rolled back")
+        }
+        Err(error) => format!(
+            "{reason}; ROLLBACK FAILED: {error}; original remains at {}",
+            tmp.display()
+        ),
+    }
+}
+
+fn rollback_swap_if_safe(
+    tmp: &Path,
+    victim: &Path,
+    expected_victim: StatSnapshot,
+    reason: &str,
+) -> String {
+    if let Err(rollback_guard) = ensure_no_open_writers(victim)
+        .and_then(|()| ensure_unchanged(victim, expected_victim, "after the swap"))
+    {
+        return format!(
+            "{reason}; rollback unsafe ({rollback_guard}); original remains at {}",
+            tmp.display()
+        );
+    }
+    rollback_swap(tmp, victim, reason)
 }
 
 fn temp_sibling(path: &Path) -> Result<PathBuf, String> {
@@ -447,6 +577,48 @@ mod tests {
             std::fs::read(&replacement.victim).expect("read"),
             b"drifted content bytes"
         );
+    }
+
+    #[test]
+    fn journal_failure_rolls_back_replacement() {
+        let (dir, replacement, _journal) = fixture();
+        let original_inode = std::fs::metadata(&replacement.victim)
+            .expect("stat victim")
+            .ino();
+        let journal_path = dir.path().join("journal-is-a-directory");
+        std::fs::create_dir(&journal_path).expect("create conflicting directory");
+        let journal = Journal::open(journal_path).expect("open journal handle");
+
+        let report = consolidate(std::slice::from_ref(&replacement), &journal);
+
+        assert!(report.completed.is_empty());
+        assert_eq!(report.refused.len(), 1);
+        assert!(report.refused[0].reason.contains("journal write failed"));
+        assert_eq!(
+            std::fs::metadata(&replacement.victim)
+                .expect("stat rolled-back victim")
+                .ino(),
+            original_inode
+        );
+        assert_eq!(
+            std::fs::read(&replacement.victim).expect("read victim"),
+            b"identical model bytes"
+        );
+    }
+
+    #[test]
+    fn refuses_victim_with_open_writer() {
+        let (_dir, replacement, journal) = fixture();
+        let _writer = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&replacement.victim)
+            .expect("hold writer open");
+
+        let report = consolidate(std::slice::from_ref(&replacement), &journal);
+
+        assert!(report.completed.is_empty());
+        assert_eq!(report.refused.len(), 1);
+        assert!(report.refused[0].reason.contains("open writer"));
     }
 
     #[test]

@@ -46,10 +46,27 @@ pub fn collect(root: &ProviderRoot, min_size: u64, outcome: &mut ScanOutcome) {
         }
     };
 
-    for entry in entries.flatten() {
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                outcome.skipped.push(Skipped {
+                    path: blobs.clone(),
+                    reason: format!("cannot read directory entry: {error}"),
+                });
+                continue;
+            }
+        };
         let path = entry.path();
-        let Ok(metadata) = entry.metadata() else {
-            continue;
+        let metadata = match entry.metadata() {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                outcome.skipped.push(Skipped {
+                    path,
+                    reason: format!("cannot stat: {error}"),
+                });
+                continue;
+            }
         };
         if !metadata.is_file() || metadata.len() < min_size {
             continue;

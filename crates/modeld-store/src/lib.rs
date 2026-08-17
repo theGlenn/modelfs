@@ -4,7 +4,8 @@
 //! provider files (`blobs/sha256-<hex>`, zero marginal disk cost on import), so the
 //! store can anchor bytes even after every provider deletes its copy. The `SQLite`
 //! registry records artifacts, which provider paths reference them, and a digest
-//! cache keyed on `(path, size, mtime)` so re-syncs never re-hash settled files.
+//! cache keyed on full file identity and timestamps so re-syncs never re-hash
+//! settled files.
 //!
 //! Callers must only import digests they have verified by hashing the source file —
 //! the store trusts its inputs and verifies nothing itself (single hashing site
@@ -12,6 +13,10 @@
 
 use modeld_core::{Digest, Format, ProviderKind};
 use rusqlite::{Connection, params};
+use std::cell::RefCell;
+use std::collections::HashSet;
+use std::fs::Metadata;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -21,6 +26,15 @@ pub enum StoreError {
     Registry(#[from] rusqlite::Error),
     #[error("store I/O error: {0}")]
     Io(#[from] std::io::Error),
+    #[error(
+        "canonical blob {} has digest {actual}, expected {expected}",
+        path.display()
+    )]
+    BlobDigestMismatch {
+        path: PathBuf,
+        expected: Digest,
+        actual: Digest,
+    },
 }
 
 /// Result of importing one blob.
@@ -60,11 +74,50 @@ pub struct Totals {
     pub logical_bytes: u64,
 }
 
+/// Filesystem identity used to validate cached digests and known APFS clones.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileStamp {
+    pub device: u64,
+    pub inode: u64,
+    pub size: u64,
+    pub mtime_secs: u64,
+    pub mtime_nanos: u32,
+    pub ctime_secs: u64,
+    pub ctime_nanos: u32,
+}
+
+impl FileStamp {
+    /// Captures all metadata that changes when a file is replaced or written.
+    #[must_use]
+    pub fn from_metadata(metadata: &Metadata) -> Self {
+        Self {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            size: metadata.len(),
+            mtime_secs: u64::try_from(metadata.mtime()).unwrap_or(0),
+            mtime_nanos: u32::try_from(metadata.mtime_nsec()).unwrap_or(0),
+            ctime_secs: u64::try_from(metadata.ctime()).unwrap_or(0),
+            ctime_nanos: u32::try_from(metadata.ctime_nsec()).unwrap_or(0),
+        }
+    }
+
+    /// Stats `path` and captures its current stamp.
+    ///
+    /// # Errors
+    /// Returns the underlying stat error.
+    pub fn of(path: &Path) -> std::io::Result<Self> {
+        std::fs::metadata(path).map(|metadata| Self::from_metadata(&metadata))
+    }
+}
+
 /// Handle to the store directory and its registry.
 #[derive(Debug)]
 pub struct Store {
     root: PathBuf,
     conn: Connection,
+    /// Avoid re-hashing the same multi-gigabyte canonical once per reference in
+    /// a single command while still validating it at least once per store open.
+    verified_blobs: RefCell<HashSet<Digest>>,
 }
 
 impl Store {
@@ -94,13 +147,33 @@ impl Store {
              CREATE INDEX IF NOT EXISTS refs_by_digest ON refs(digest);
              CREATE TABLE IF NOT EXISTS digest_cache (
                  path        TEXT PRIMARY KEY,
+                 device      INTEGER NOT NULL,
+                 inode       INTEGER NOT NULL,
                  size        INTEGER NOT NULL,
                  mtime_secs  INTEGER NOT NULL,
                  mtime_nanos INTEGER NOT NULL,
+                 ctime_secs  INTEGER NOT NULL,
+                 ctime_nanos INTEGER NOT NULL,
                  digest      TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS shared_paths (
+                 path        TEXT PRIMARY KEY,
+                 digest      TEXT NOT NULL,
+                 device      INTEGER NOT NULL,
+                 inode       INTEGER NOT NULL,
+                 size        INTEGER NOT NULL,
+                 mtime_secs  INTEGER NOT NULL,
+                 mtime_nanos INTEGER NOT NULL,
+                 ctime_secs  INTEGER NOT NULL,
+                 ctime_nanos INTEGER NOT NULL
              );",
         )?;
-        Ok(Self { root, conn })
+        migrate_stamp_columns(&conn, "digest_cache")?;
+        Ok(Self {
+            root,
+            conn,
+            verified_blobs: RefCell::new(HashSet::new()),
+        })
     }
 
     /// Path a blob for `digest` lives at (whether or not it exists yet).
@@ -125,33 +198,68 @@ impl Store {
         &self,
         source: &Path,
         digest: &Digest,
-        size: u64,
         format: Option<&Format>,
     ) -> Result<ImportOutcome, StoreError> {
         let blob = self.blob_path(digest);
-        let outcome = if blob.exists() {
-            ImportOutcome::AlreadyPresent
-        } else {
-            match modeld_core::apfs::clone_file(source, &blob) {
-                Ok(()) => ImportOutcome::Imported,
-                Err(error) if matches!(error.raw_os_error(), Some(libc::EXDEV | libc::ENOTSUP)) => {
-                    return Ok(ImportOutcome::NotCloneable);
+        let already_verified = self.verified_blobs.borrow().contains(digest);
+        let mut outcome = ImportOutcome::AlreadyPresent;
+
+        if !already_verified {
+            if blob.exists() {
+                let actual = Digest::sha256_file(&blob)?;
+                if actual != *digest {
+                    std::fs::remove_file(&blob)?;
+                    outcome = self.clone_verified(source, &blob, digest)?;
                 }
-                Err(error) => return Err(error.into()),
+            } else {
+                outcome = self.clone_verified(source, &blob, digest)?;
             }
-        };
+            if outcome == ImportOutcome::NotCloneable {
+                return Ok(outcome);
+            }
+            self.verified_blobs.borrow_mut().insert(digest.clone());
+        }
+
+        let verified_size = std::fs::metadata(&blob)?.len();
         self.conn.execute(
             "INSERT INTO artifacts (digest, size, format, imported_at)
              VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(digest) DO UPDATE SET size = ?2, format = ?3",
             params![
                 digest.to_string(),
-                size,
+                verified_size,
                 format.map(format_name),
                 epoch_secs()
             ],
         )?;
         Ok(outcome)
+    }
+
+    fn clone_verified(
+        &self,
+        source: &Path,
+        blob: &Path,
+        expected: &Digest,
+    ) -> Result<ImportOutcome, StoreError> {
+        match modeld_core::apfs::clone_file(source, blob) {
+            Ok(()) => {}
+            Err(error) if matches!(error.raw_os_error(), Some(libc::EXDEV | libc::ENOTSUP)) => {
+                return Ok(ImportOutcome::NotCloneable);
+            }
+            Err(error) => return Err(error.into()),
+        }
+        let source_stamp = FileStamp::of(source)?;
+        let actual = Digest::sha256_file(blob)?;
+        if actual != *expected {
+            let _ = std::fs::remove_file(blob);
+            return Err(StoreError::BlobDigestMismatch {
+                path: blob.to_path_buf(),
+                expected: expected.clone(),
+                actual,
+            });
+        }
+        self.record_shared_stamp(expected, source, source_stamp)?;
+        Ok(ImportOutcome::Imported)
     }
 
     /// Records that `path` (owned by `provider`) references `digest`.
@@ -200,17 +308,26 @@ impl Store {
     pub fn cached_digest(
         &self,
         path: &Path,
-        size: u64,
-        mtime_secs: u64,
-        mtime_nanos: u32,
+        stamp: FileStamp,
     ) -> Result<Option<Digest>, StoreError> {
         let mut statement = self.conn.prepare(
             "SELECT digest FROM digest_cache
-             WHERE path = ?1 AND size = ?2 AND mtime_secs = ?3 AND mtime_nanos = ?4",
+             WHERE path = ?1 AND device = ?2 AND inode = ?3 AND size = ?4
+               AND mtime_secs = ?5 AND mtime_nanos = ?6
+               AND ctime_secs = ?7 AND ctime_nanos = ?8",
         )?;
         let digest = statement
             .query_row(
-                params![path.to_string_lossy(), size, mtime_secs, mtime_nanos],
+                params![
+                    path.to_string_lossy(),
+                    stamp.device,
+                    stamp.inode,
+                    stamp.size,
+                    stamp.mtime_secs,
+                    stamp.mtime_nanos,
+                    stamp.ctime_secs,
+                    stamp.ctime_nanos
+                ],
                 |row| row.get::<_, String>(0),
             )
             .map(|text| text.parse().ok())
@@ -224,29 +341,112 @@ impl Store {
         Ok(digest)
     }
 
-    /// Remembers a computed digest for `(path, size, mtime)`.
+    /// Remembers a computed digest for a fully stamped file identity.
     ///
     /// # Errors
     /// Registry failure.
     pub fn remember_digest(
         &self,
         path: &Path,
-        size: u64,
-        mtime_secs: u64,
-        mtime_nanos: u32,
+        stamp: FileStamp,
         digest: &Digest,
     ) -> Result<(), StoreError> {
         self.conn.execute(
-            "INSERT INTO digest_cache (path, size, mtime_secs, mtime_nanos, digest)
-             VALUES (?1, ?2, ?3, ?4, ?5)
+            "INSERT INTO digest_cache
+                 (path, device, inode, size, mtime_secs, mtime_nanos, ctime_secs, ctime_nanos, digest)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT(path) DO UPDATE SET
-                 size = ?2, mtime_secs = ?3, mtime_nanos = ?4, digest = ?5",
+                 device = ?2, inode = ?3, size = ?4,
+                 mtime_secs = ?5, mtime_nanos = ?6,
+                 ctime_secs = ?7, ctime_nanos = ?8, digest = ?9",
             params![
                 path.to_string_lossy(),
-                size,
-                mtime_secs,
-                mtime_nanos,
+                stamp.device,
+                stamp.inode,
+                stamp.size,
+                stamp.mtime_secs,
+                stamp.mtime_nanos,
+                stamp.ctime_secs,
+                stamp.ctime_nanos,
                 digest.to_string()
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Returns whether `path` is still the exact file modeld recorded as sharing
+    /// the canonical blob for `digest`.
+    ///
+    /// # Errors
+    /// Registry or stat failure.
+    pub fn path_is_shared(&self, digest: &Digest, path: &Path) -> Result<bool, StoreError> {
+        let mut statement = self.conn.prepare(
+            "SELECT device, inode, size, mtime_secs, mtime_nanos, ctime_secs, ctime_nanos
+             FROM shared_paths WHERE path = ?1 AND digest = ?2",
+        )?;
+        let stored =
+            statement.query_row(params![path.to_string_lossy(), digest.to_string()], |row| {
+                Ok(FileStamp {
+                    device: row.get(0)?,
+                    inode: row.get(1)?,
+                    size: row.get(2)?,
+                    mtime_secs: row.get(3)?,
+                    mtime_nanos: row.get(4)?,
+                    ctime_secs: row.get(5)?,
+                    ctime_nanos: row.get(6)?,
+                })
+            });
+        match stored {
+            Ok(stored) => Ok(FileStamp::of(path)? == stored),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(false),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// Records the current file at `path` as an APFS clone of `digest`.
+    ///
+    /// # Errors
+    /// Registry or stat failure.
+    pub fn record_shared_path(&self, digest: &Digest, path: &Path) -> Result<(), StoreError> {
+        self.record_shared_stamp(digest, path, FileStamp::of(path)?)
+    }
+
+    /// Forgets clone-state metadata for a path restored to an independent copy.
+    ///
+    /// # Errors
+    /// Registry failure.
+    pub fn forget_shared_path(&self, path: &Path) -> Result<(), StoreError> {
+        self.conn.execute(
+            "DELETE FROM shared_paths WHERE path = ?1",
+            params![path.to_string_lossy()],
+        )?;
+        Ok(())
+    }
+
+    fn record_shared_stamp(
+        &self,
+        digest: &Digest,
+        path: &Path,
+        stamp: FileStamp,
+    ) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT INTO shared_paths
+                 (path, digest, device, inode, size, mtime_secs, mtime_nanos, ctime_secs, ctime_nanos)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT(path) DO UPDATE SET
+                 digest = ?2, device = ?3, inode = ?4, size = ?5,
+                 mtime_secs = ?6, mtime_nanos = ?7,
+                 ctime_secs = ?8, ctime_nanos = ?9",
+            params![
+                path.to_string_lossy(),
+                digest.to_string(),
+                stamp.device,
+                stamp.inode,
+                stamp.size,
+                stamp.mtime_secs,
+                stamp.mtime_nanos,
+                stamp.ctime_secs,
+                stamp.ctime_nanos
             ],
         )?;
         Ok(())
@@ -358,6 +558,33 @@ pub fn epoch_secs() -> u64 {
         .as_secs()
 }
 
+/// Monotonic-enough wall-clock stamp for distinguishing adjacent sync runs.
+///
+/// Nanoseconds avoid retaining stale rows when two syncs start in the same second.
+#[must_use]
+pub fn sync_stamp() -> u64 {
+    let nanos = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    u64::try_from(nanos).unwrap_or(u64::MAX)
+}
+
+fn migrate_stamp_columns(conn: &Connection, table: &str) -> Result<(), rusqlite::Error> {
+    let mut statement = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let existing = statement
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<HashSet<_>, _>>()?;
+    for column in ["device", "inode", "ctime_secs", "ctime_nanos"] {
+        if !existing.contains(column) {
+            conn.execute_batch(&format!(
+                "ALTER TABLE {table} ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0;"
+            ))?;
+        }
+    }
+    Ok(())
+}
+
 fn provider_name(provider: ProviderKind) -> &'static str {
     match provider {
         ProviderKind::Ollama => "ollama",
@@ -401,10 +628,10 @@ mod tests {
         let (source, digest) = digest_of(b"weights", dir.path());
 
         let first = store
-            .import_blob(&source, &digest, 7, Some(&Format::Gguf))
+            .import_blob(&source, &digest, Some(&Format::Gguf))
             .expect("import");
         let second = store
-            .import_blob(&source, &digest, 7, Some(&Format::Gguf))
+            .import_blob(&source, &digest, Some(&Format::Gguf))
             .expect("re-import");
 
         assert_eq!(first, ImportOutcome::Imported);
@@ -420,7 +647,7 @@ mod tests {
         let (dir, store) = store();
         let (source, digest) = digest_of(b"weights", dir.path());
         store
-            .import_blob(&source, &digest, 7, Some(&Format::Gguf))
+            .import_blob(&source, &digest, Some(&Format::Gguf))
             .expect("import");
         store
             .record_reference(
@@ -453,9 +680,7 @@ mod tests {
     fn prune_drops_references_not_seen_this_sync() {
         let (dir, store) = store();
         let (source, digest) = digest_of(b"weights", dir.path());
-        store
-            .import_blob(&source, &digest, 7, None)
-            .expect("import");
+        store.import_blob(&source, &digest, None).expect("import");
         store
             .record_reference(&digest, &source, ProviderKind::LmStudio, None, 100)
             .expect("ref");
@@ -475,12 +700,29 @@ mod tests {
         let (dir, store) = store();
         let path = dir.path().join("file");
         let digest = Digest::new(Algorithm::Sha256, vec![9; 32]).expect("digest");
+        let stamp = FileStamp {
+            device: 1,
+            inode: 2,
+            size: 10,
+            mtime_secs: 1000,
+            mtime_nanos: 500,
+            ctime_secs: 1001,
+            ctime_nanos: 600,
+        };
         store
-            .remember_digest(&path, 10, 1000, 500, &digest)
+            .remember_digest(&path, stamp, &digest)
             .expect("remember");
 
-        let hit = store.cached_digest(&path, 10, 1000, 500).expect("query");
-        let stale = store.cached_digest(&path, 10, 1000, 501).expect("query");
+        let hit = store.cached_digest(&path, stamp).expect("query");
+        let stale = store
+            .cached_digest(
+                &path,
+                FileStamp {
+                    ctime_nanos: 601,
+                    ..stamp
+                },
+            )
+            .expect("query");
 
         assert_eq!(hit, Some(digest));
         assert_eq!(stale, None);
@@ -490,9 +732,7 @@ mod tests {
     fn find_matches_labels_case_insensitively() {
         let (dir, store) = store();
         let (source, digest) = digest_of(b"weights", dir.path());
-        store
-            .import_blob(&source, &digest, 7, None)
-            .expect("import");
+        store.import_blob(&source, &digest, None).expect("import");
         store
             .record_reference(
                 &digest,
@@ -505,5 +745,29 @@ mod tests {
 
         assert_eq!(store.find("QWEN3").expect("find").len(), 1);
         assert!(store.find("gemma").expect("find").is_empty());
+    }
+
+    #[test]
+    fn imported_source_is_remembered_only_while_unchanged() {
+        let (dir, store) = store();
+        let (source, digest) = digest_of(b"weights", dir.path());
+        store.import_blob(&source, &digest, None).expect("import");
+
+        assert!(store.path_is_shared(&digest, &source).expect("shared"));
+        std::fs::write(&source, b"changed").expect("mutate source");
+        assert!(!store.path_is_shared(&digest, &source).expect("stale"));
+    }
+
+    #[test]
+    fn repairs_a_corrupt_existing_canonical() {
+        let (dir, store) = store();
+        let (source, digest) = digest_of(b"weights", dir.path());
+        let blob = store.blob_path(&digest);
+        std::fs::write(&blob, b"corrupt").expect("seed corrupt blob");
+
+        let outcome = store.import_blob(&source, &digest, None).expect("repair");
+
+        assert_eq!(outcome, ImportOutcome::Imported);
+        assert_eq!(std::fs::read(blob).expect("read repaired"), b"weights");
     }
 }

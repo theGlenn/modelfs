@@ -54,6 +54,8 @@ pub fn load(path: &Path) -> Result<Config, String> {
 /// root path so `ls` shows which project a fixture file belongs to.
 #[must_use]
 pub fn manual_roots(config: &Config, home: &Path) -> Vec<ProviderRoot> {
+    // Canonical home so label prefixes strip cleanly (macOS: /tmp vs /private/tmp).
+    let home_canonical = home.canonicalize().unwrap_or_else(|_| home.to_path_buf());
     let mut roots = Vec::new();
     for pattern in &config.scan.roots {
         let expanded = expand_home(pattern, home);
@@ -64,14 +66,19 @@ pub fn manual_roots(config: &Config, home: &Path) -> Vec<ProviderRoot> {
             continue;
         };
         for path in matches.flatten().filter(|path| path.is_dir()) {
-            let label_prefix = path
-                .strip_prefix(home)
-                .unwrap_or(&path)
+            // Canonicalize so symlink-aliased project dirs (common with Conductor
+            // workspaces) collapse to one root instead of double-counting files.
+            let Ok(canonical) = path.canonicalize() else {
+                continue;
+            };
+            let label_prefix = canonical
+                .strip_prefix(&home_canonical)
+                .unwrap_or(&canonical)
                 .to_string_lossy()
                 .into_owned();
             roots.push(ProviderRoot {
                 kind: ProviderKind::Manual,
-                root: path,
+                root: canonical,
                 excluded: vec![],
                 label_prefix: Some(label_prefix),
             });
@@ -113,6 +120,27 @@ mod tests {
         let path = dir.path().join("config.toml");
         std::fs::write(&path, "not [valid toml").expect("write");
         assert!(load(&path).is_err());
+    }
+
+    #[test]
+    fn symlink_aliased_roots_collapse_to_one() {
+        let home = tempfile::tempdir().expect("create temp dir");
+        let real = home.path().join("ws/curitiba/fixtures/models");
+        std::fs::create_dir_all(&real).expect("mkdir");
+        std::os::unix::fs::symlink(
+            home.path().join("ws/curitiba"),
+            home.path().join("ws/neutrino-alias"),
+        )
+        .expect("symlink project dir");
+
+        let config = Config {
+            scan: ScanConfig {
+                roots: vec!["~/ws/*/fixtures/models".to_string()],
+            },
+        };
+        let roots = manual_roots(&config, home.path());
+
+        assert_eq!(roots.len(), 1);
     }
 
     #[test]

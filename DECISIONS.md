@@ -1,0 +1,58 @@
+# Decisions
+
+Dated log of load-bearing choices. Newest last.
+
+## 2026-08-13 — Language: Rust
+
+Covers the whole roadmap: syscall-level filesystem work (clonefile, renamex_np), mmap
+GGUF parsing, later FUSE (`fuser`) and daemon. Single static binary. Edition 2024.
+
+## 2026-08-13 — Platform: macOS/APFS first, Linux second
+
+Local-AI usage concentrates on Apple Silicon (MLX is macOS-only). Storage backend goes
+behind a trait so Linux reflink (`FICLONE` on btrfs/XFS) and hardlink fallback slot in
+later.
+
+## 2026-08-13 — Dedupe mechanism: APFS clonefile, not hardlink
+
+`clonefile(2)` shares extents (same disk savings) but keeps independent inodes:
+a provider mutating its copy triggers copy-on-write instead of corrupting every view.
+Hardlink remains an opt-in flag later.
+
+Measured on this machine (44 MB Ollama blob, `/System/Volumes/Data`):
+clone cost **0 blocks**, full copy cost 89 800 × 512 B blocks. Atomic
+clone-to-temp + `rename` preserves content hash.
+
+Consequence: savings accounting can't trust `du` (clones report full logical size).
+Measure via allocated-blocks delta / container free space.
+
+## 2026-08-13 — Digest: SHA-256 first-class, algorithm-independent abstraction
+
+SHA-256 is the ecosystem interop digest: Ollama blob filenames ARE sha256; HF LFS blob
+names ARE sha256. Harvest identity from names, verify lazily. The `Digest` type carries
+an explicit algorithm tag (`sha256:<hex>` rendering) so blake3 or chunk-level schemes
+can join without schema breakage. HF 40-hex names are git-SHA-1 — parseable, never
+trusted as content identity.
+
+## 2026-08-13 — Xet is a distinct provider architecture
+
+`~/.cache/huggingface/xet` is a chunk-level transfer cache (shards + chunks), not model
+storage. Excluded from scan, never modified. See `providers/xet.md`.
+
+## 2026-08-13 — Conservative dedupe protocol
+
+No mtime-only heuristics. Per replacement:
+
+1. Fully hash canonical A and target B; require byte-identical digests.
+2. Snapshot B's `stat` (inode, size, mtime); check no open write fds (`lsof`).
+3. `clonefile` A → `B.modeld-tmp-<pid>` in B's directory (same volume guaranteed).
+4. Re-`stat` B; any change (inode/size/mtime) aborts.
+5. Fully hash the temporary clone, then atomically swap with
+   `renamex_np(tmp, B, RENAME_SWAP)` — B's original bytes survive under the temp name.
+6. Re-check the original inode under the temp name for racing writers/metadata changes;
+   roll back on any change.
+7. Durably journal the swap before releasing the rollback file, then restore B's
+   original mtime where providers key caches on it (LM Studio).
+8. `modeld restore` replays the journal with the same writer and stat checks.
+
+Files with `.incomplete`/`.part`/`-partial` markers or active writers are never touched.

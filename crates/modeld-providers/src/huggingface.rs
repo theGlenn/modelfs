@@ -4,7 +4,7 @@
 //! See providers/huggingface.md and providers/xet.md.
 
 use crate::ProviderRoot;
-use crate::scan::{ScanOutcome, artifact_from_file, detect_format};
+use crate::scan::{ScanOutcome, Skipped, artifact_from_file, detect_format};
 use modeld_core::{Algorithm, Digest, ProviderKind};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -44,10 +44,27 @@ pub fn digest_from_blob_name(file_name: &str) -> Option<Digest> {
 /// label blobs with their repo-relative filename. Dataset and space caches are
 /// ignored — modeld tracks model artifacts.
 pub fn collect(root: &ProviderRoot, min_size: u64, outcome: &mut ScanOutcome) {
-    let Ok(entries) = std::fs::read_dir(&root.root) else {
-        return;
+    let entries = match std::fs::read_dir(&root.root) {
+        Ok(entries) => entries,
+        Err(error) => {
+            outcome.skipped.push(Skipped {
+                path: root.root.clone(),
+                reason: format!("cannot list cache root: {error}"),
+            });
+            return;
+        }
     };
-    for entry in entries.flatten() {
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                outcome.skipped.push(Skipped {
+                    path: root.root.clone(),
+                    reason: format!("cannot read directory entry: {error}"),
+                });
+                continue;
+            }
+        };
         let dir_name = entry.file_name();
         let Some(repo) = dir_name.to_str().and_then(repo_id_from_cache_dir) else {
             continue;
@@ -64,12 +81,40 @@ fn repo_id_from_cache_dir(dir_name: &str) -> Option<String> {
 
 fn collect_repo(repo_dir: &Path, repo: &str, min_size: u64, outcome: &mut ScanOutcome) {
     let filenames = filenames_by_blob(&repo_dir.join("snapshots"));
-    let Ok(entries) = std::fs::read_dir(repo_dir.join("blobs")) else {
-        return;
+    let blobs = repo_dir.join("blobs");
+    let entries = match std::fs::read_dir(&blobs) {
+        Ok(entries) => entries,
+        // A repo cached for metadata only (refs/.no_exist, no blobs/) is normal,
+        // not a scan failure — it must not block reference pruning.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+        Err(error) => {
+            outcome.skipped.push(Skipped {
+                path: blobs,
+                reason: format!("cannot list blobs: {error}"),
+            });
+            return;
+        }
     };
-    for entry in entries.flatten() {
-        let Ok(metadata) = entry.metadata() else {
-            continue;
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                outcome.skipped.push(Skipped {
+                    path: repo_dir.to_path_buf(),
+                    reason: format!("cannot read directory entry: {error}"),
+                });
+                continue;
+            }
+        };
+        let metadata = match entry.metadata() {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                outcome.skipped.push(Skipped {
+                    path: entry.path(),
+                    reason: format!("cannot stat: {error}"),
+                });
+                continue;
+            }
         };
         if !metadata.is_file() || metadata.len() < min_size {
             continue;

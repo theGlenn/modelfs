@@ -84,15 +84,35 @@ pub fn hash_for_dedup(outcome: &mut ScanOutcome, mut progress: impl FnMut(&Path,
 /// prefixed with the root's `label_prefix` when set. Symlinks are skipped — a
 /// symlinked model file already shares storage with its target.
 pub fn collect_model_tree(root: &crate::ProviderRoot, min_size: u64, outcome: &mut ScanOutcome) {
-    for entry in walkdir::WalkDir::new(&root.root)
+    let entries = walkdir::WalkDir::new(&root.root)
         .follow_links(false)
         .into_iter()
-        .filter_entry(|e| !root.excluded.iter().any(|ex| e.path().starts_with(ex)))
-        .filter_map(Result::ok)
-        .filter(|e| e.file_type().is_file())
-    {
-        let Ok(metadata) = entry.metadata() else {
+        .filter_entry(|e| !root.excluded.iter().any(|ex| e.path().starts_with(ex)));
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                outcome.skipped.push(Skipped {
+                    path: error
+                        .path()
+                        .map_or_else(|| root.root.clone(), Path::to_path_buf),
+                    reason: format!("walk failed: {error}"),
+                });
+                continue;
+            }
+        };
+        if !entry.file_type().is_file() {
             continue;
+        }
+        let metadata = match entry.metadata() {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                outcome.skipped.push(Skipped {
+                    path: entry.path().to_path_buf(),
+                    reason: format!("cannot stat: {error}"),
+                });
+                continue;
+            }
         };
         if metadata.len() < min_size {
             continue;
@@ -133,6 +153,7 @@ pub(crate) fn artifact_from_file(
             device: metadata.dev(),
             inode: metadata.ino(),
         }),
+        link_count: Some(metadata.nlink()),
         path,
         provider,
         format,

@@ -130,6 +130,7 @@ mod tests {
             digest_verified: false,
             label: None,
             file_id: inode.map(|inode| FileId { device: 1, inode }),
+            link_count: Some(1),
         }
     }
 

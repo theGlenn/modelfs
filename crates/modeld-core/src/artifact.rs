@@ -56,4 +56,9 @@ pub struct Artifact {
     /// `Qwen/Qwen3.5-0.8B: model.safetensors`. Display-only; never an identity.
     pub label: Option<String>,
     pub file_id: Option<FileId>,
+    /// Number of directory entries referencing this inode at scan time.
+    ///
+    /// Consolidation refuses multiply-linked files because replacing only the
+    /// paths visible to modeld cannot prove that the underlying storage is freed.
+    pub link_count: Option<u64>,
 }

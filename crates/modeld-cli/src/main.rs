@@ -1,7 +1,8 @@
 use clap::{Parser, Subcommand};
 use modeld_core::{Artifact, Digest};
 use modeld_providers::scan::ScanOutcome;
-use modeld_store::Store;
+use modeld_store::{FileStamp, Store};
+use std::collections::{HashMap, HashSet};
 use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 
@@ -95,12 +96,18 @@ fn sync(min_size: u64) {
         return;
     };
     let store = open_store();
-    let stamp = modeld_store::epoch_secs();
+    let stamp = modeld_store::sync_stamp();
     let mut imported = 0usize;
     let mut referenced = 0usize;
+    let mut can_prune = outcome.skipped.is_empty();
 
     for artifact in &mut outcome.artifacts {
         if !ensure_verified_digest(&store, artifact) {
+            can_prune = false;
+            eprintln!(
+                "skip {} (file changed or could not be hashed)",
+                artifact.path.display()
+            );
             continue;
         }
         let Some(digest) = artifact.digest.clone() else {
@@ -109,19 +116,16 @@ fn sync(min_size: u64) {
         if digest.algorithm() != modeld_core::Algorithm::Sha256 {
             continue;
         }
-        match store.import_blob(
-            &artifact.path,
-            &digest,
-            artifact.size,
-            artifact.format.as_ref(),
-        ) {
+        match store.import_blob(&artifact.path, &digest, artifact.format.as_ref()) {
             Ok(modeld_store::ImportOutcome::Imported) => imported += 1,
             Ok(modeld_store::ImportOutcome::AlreadyPresent) => {}
             Ok(modeld_store::ImportOutcome::NotCloneable) => {
+                can_prune = false;
                 eprintln!("skip {} (different volume)", artifact.path.display());
                 continue;
             }
             Err(error) => {
+                can_prune = false;
                 eprintln!("skip {} ({error})", artifact.path.display());
                 continue;
             }
@@ -135,11 +139,25 @@ fn sync(min_size: u64) {
         );
         match recorded {
             Ok(()) => referenced += 1,
-            Err(error) => eprintln!("skip ref {} ({error})", artifact.path.display()),
+            Err(error) => {
+                can_prune = false;
+                eprintln!("skip ref {} ({error})", artifact.path.display());
+            }
         }
     }
 
-    let pruned = store.prune_references_before(stamp).unwrap_or(0);
+    let pruned = if can_prune {
+        match store.prune_references_before(stamp) {
+            Ok(pruned) => pruned,
+            Err(error) => {
+                eprintln!("warning: stale references were not pruned ({error})");
+                0
+            }
+        }
+    } else {
+        eprintln!("warning: incomplete sync; stale references were not pruned");
+        0
+    };
     println!(
         "Synced: {imported} new blob(s), {referenced} reference(s), {pruned} stale reference(s) pruned"
     );
@@ -208,12 +226,7 @@ fn dedupe(dry_run: bool, min_size: u64) {
         let import = if dry_run {
             None
         } else {
-            match store.import_blob(
-                &source.path,
-                &group.digest,
-                group.size,
-                source.format.as_ref(),
-            ) {
+            match store.import_blob(&source.path, &group.digest, source.format.as_ref()) {
                 Ok(outcome) => Some(outcome),
                 Err(error) => {
                     eprintln!("skip group {} ({error})", group.digest);
@@ -233,13 +246,25 @@ fn dedupe(dry_run: bool, min_size: u64) {
             })
             .ok()
             .or_else(|| source.file_id.filter(|_| dry_run));
-        let fresh_import = import == Some(modeld_store::ImportOutcome::Imported);
+        let mut already_shared = HashSet::new();
+        for &index in &group.members {
+            let artifact = &outcome.artifacts[index];
+            if store
+                .path_is_shared(&group.digest, &artifact.path)
+                .unwrap_or(false)
+            {
+                already_shared.insert(artifact.path.clone());
+            }
+        }
+        if dry_run {
+            already_shared.insert(source.path.clone());
+        }
         replacements.extend(plan::replacements_for_group(
             &outcome.artifacts,
             group,
             &blob,
             blob_id,
-            fresh_import,
+            &already_shared,
         ));
     }
 
@@ -254,13 +279,38 @@ fn dedupe(dry_run: bool, min_size: u64) {
 
     let journal = open_journal();
     let result = modeld_core::consolidate::consolidate(&replacements, &journal);
+    let digests_by_path: HashMap<_, _> = replacements
+        .iter()
+        .map(|replacement| (&replacement.victim, &replacement.digest))
+        .collect();
+    for path in &result.completed {
+        if let Some(digest) = digests_by_path.get(path)
+            && let Err(error) = store.record_shared_path(digest, path)
+        {
+            eprintln!(
+                "warning: could not remember clone state for {} ({error})",
+                path.display()
+            );
+        }
+    }
     print!("{}", report::render_consolidation(&result, "Freed"));
 }
 
 fn restore() {
     let journal = open_journal();
     match modeld_core::consolidate::restore(&journal) {
-        Ok(result) => print!("{}", report::render_consolidation(&result, "Re-expanded")),
+        Ok(result) => {
+            let store = open_store();
+            for path in &result.completed {
+                if let Err(error) = store.forget_shared_path(path) {
+                    eprintln!(
+                        "warning: could not clear clone state for {} ({error})",
+                        path.display()
+                    );
+                }
+            }
+            print!("{}", report::render_consolidation(&result, "Re-expanded"));
+        }
         Err(error) => {
             eprintln!("restore failed: {error}");
             std::process::exit(1);
@@ -276,13 +326,14 @@ fn ensure_verified_digest(store: &Store, artifact: &mut Artifact) -> bool {
     if artifact.digest_verified {
         return true;
     }
-    let Ok(metadata) = std::fs::metadata(&artifact.path) else {
+    let Ok(before) = FileStamp::of(&artifact.path) else {
         return false;
     };
-    let mtime_secs = u64::try_from(metadata.mtime()).unwrap_or(0);
-    let mtime_nanos = u32::try_from(metadata.mtime_nsec()).unwrap_or(0);
-    if let Ok(Some(cached)) =
-        store.cached_digest(&artifact.path, artifact.size, mtime_secs, mtime_nanos)
+    if before.size != artifact.size {
+        return false;
+    }
+    if let Ok(Some(cached)) = store.cached_digest(&artifact.path, before)
+        && FileStamp::of(&artifact.path).is_ok_and(|after| after == before)
     {
         artifact.digest = Some(cached);
         artifact.digest_verified = true;
@@ -296,13 +347,10 @@ fn ensure_verified_digest(store: &Store, artifact: &mut Artifact) -> bool {
     let Ok(actual) = Digest::sha256_file(&artifact.path) else {
         return false;
     };
-    let _ = store.remember_digest(
-        &artifact.path,
-        artifact.size,
-        mtime_secs,
-        mtime_nanos,
-        &actual,
-    );
+    if !FileStamp::of(&artifact.path).is_ok_and(|after| after == before) {
+        return false;
+    }
+    let _ = store.remember_digest(&artifact.path, before, &actual);
     artifact.digest = Some(actual);
     artifact.digest_verified = true;
     true
