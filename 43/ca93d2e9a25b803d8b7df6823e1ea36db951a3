@@ -1,0 +1,95 @@
+crates/modeld-core/src/consolidate.rs
+  s_f9421f29a06fce::t_17d6a26d058338 27,132-144,148-169,178,271,278-286,297-298,300,302-305,308,319-337,341-342,344-345,352-356,359,361,368,424-439,441-442,451,459-460,588,607
+  s_f9421f29a06fce::t_80edfc56a8f71a 76,261-262,264
+  s_137f96e2219c62::t_7dd3d16dc372b3 12-15,111,114,116-118,131,179,263,299,301,357-358,360,362,367,369-376,440,443-450,452-458,461-477,582-587,589-606,608-623
+crates/modeld-providers/src/config.rs
+  s_ffaa3624dfd97d::t_83c353cd3b33b0 57-58
+  s_ffaa3624dfd97d::t_502d98733bab4c 126-145
+  s_ffaa3624dfd97d::t_ebeaeab7da824b 69-74,76,81
+  s_ffaa3624dfd97d::t_e6aec947d4f541 75
+  s_ffaa3624dfd97d::t_9adfbbc854b3b8 125
+crates/modeld-providers/src/huggingface.rs
+  s_ffaa3624dfd97d::t_3f7908ead373d3 87-89
+  s_ffaa3624dfd97d::t_73a94c1f562c1a 84-86
+  s_ffaa3624dfd97d::t_3ee390de67401e 90-92
+  s_ffaa3624dfd97d::t_2f89b05f224276 7,47-55,57-67,93-96,98-117
+providers/lmstudio.md
+  s_ffaa3624dfd97d::t_de14a9cd668983 1-54
+crates/modeld-store/src/lib.rs
+  s_f9421f29a06fce::t_acdd93cb3621bc 631,634,650,683,717-719,724-725,735,754
+  s_f9421f29a06fce::t_f2a28338859f36 16-19,29-37,77-112,118-120,150-151,155-156,158-168,171-176,204-212,214-215,217-223,230,238-264,311,315-317,321-330,344,351,355-357,359-361,364-370,377-386,389-397,399-449,451-453,571,583-584,586,759,772
+  s_f9421f29a06fce::t_17d6a26d058338 387-388,398
+  s_f9421f29a06fce::t_b0043427059275 450
+  s_f9421f29a06fce::t_c661d6480fd432 454
+  s_f9421f29a06fce::t_7e01afe3d7ef28 568-570
+  s_f9421f29a06fce::t_e791687eeba164 572-574,580-582
+  s_f9421f29a06fce::t_dc779659dd652a 585
+  s_f9421f29a06fce::t_5eba13b905ac1a 587
+  s_f9421f29a06fce::t_b4bd6c8061f469 716
+  s_f9421f29a06fce::t_1fa20e34491afa 720-723
+  s_f9421f29a06fce::t_5a64c8ff8c316b 751-753
+  s_f9421f29a06fce::t_a13c9b9239528b 755-758
+  s_f9421f29a06fce::t_d88ee3061e65b6 760-762,769-771
+  s_f9421f29a06fce::t_8fc425d0b2814f 7-8,561-567,575-579,703-711,713,749-750,763-768
+crates/modeld-cli/src/main.rs
+  s_f9421f29a06fce::t_17d6a26d058338 4-5,99,102,106,128,142-145,149-160,249-261,267,282-295,302-313,329,332-336,350-353
+  s_f9421f29a06fce::t_b600a574b00311 107-110,119,229
+  s_f9421f29a06fce::t_e0b67203ff473b 123
+crates/modeld-cli/src/plan.rs
+  s_f9421f29a06fce::t_99ee972fc222fc 118
+  s_f9421f29a06fce::t_310905b4590ac2 6,11-14,20,22-23,27,32-35,63,77,84,93-96,99,124-138
+  s_f9421f29a06fce::t_f774965db8d843 97-98,122-123
+providers/xet.md
+  s_ffaa3624dfd97d::t_5af9c7b661b541 1-42
+providers/mlx.md
+  s_ffaa3624dfd97d::t_6abb0045c33c2e 1-26
+DECISIONS.md
+  s_ffaa3624dfd97d::t_9a795765a89e40 1-49,55,57-58
+  s_137f96e2219c62::t_0d000d66d997c4 50-54,56
+providers/ollama.md
+  s_ffaa3624dfd97d::t_2abd5a38f91c42 1-64
+providers/huggingface.md
+  s_ffaa3624dfd97d::t_244fdfad394f46 1-59
+.gitignore
+  s_137f96e2219c62::t_efb87a28967659 8-9
+crates/modeld-core/src/artifact.rs
+  s_137f96e2219c62::t_e26ebb64f16501 59-63
+crates/modeld-core/src/dedup.rs
+  s_137f96e2219c62::t_76bb847447ab04 133
+crates/modeld-providers/src/ollama.rs
+  s_f9421f29a06fce::t_a81e08c35ad65d 49-59,61-69
+crates/modeld-providers/src/scan.rs
+  s_f9421f29a06fce::t_39c33fcfec99fa 87,90-104,106-115,156
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "43ca93d2e9a25b803d8b7df6823e1ea36db951a3",
+  "prompts": {},
+  "sessions": {
+    "s_137f96e2219c62": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "84a88da4-8102-4793-8f10-0d154e490dc5",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Glenn Sonna <kenpachi.os@gmail.com>"
+    },
+    "s_f9421f29a06fce": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0098f-0356-7500-80b9-617ec94597b7",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Glenn Sonna <kenpachi.os@gmail.com>"
+    },
+    "s_ffaa3624dfd97d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "393ec917-ce4f-4896-93c5-c11f85ee8bf9",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Glenn Sonna <kenpachi.os@gmail.com>"
+    }
+  }
+}
