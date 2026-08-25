@@ -181,12 +181,20 @@ pub(crate) fn detect_format(path: &Path) -> Option<Format> {
 }
 
 fn detect_format_by_magic(path: &Path) -> Option<Format> {
+    // Largest plausible safetensors JSON header; real ones are well under 10 MiB.
+    const MAX_SAFETENSORS_HEADER: u64 = 100 * 1024 * 1024;
     let mut file = std::fs::File::open(path).ok()?;
-    let mut magic = [0u8; 4];
-    file.read_exact(&mut magic).ok()?;
+    let mut prefix = [0u8; 9];
+    file.read_exact(&mut prefix).ok()?;
     // GGUF files start with the ASCII magic "GGUF" (little-endian u32 0x46554747).
-    if &magic == b"GGUF" {
+    if prefix.starts_with(b"GGUF") {
         return Some(Format::Gguf);
+    }
+    // Safetensors has no magic: a u64 LE JSON-header length followed by '{'.
+    // A plausible length plus an opening brace is decisive for model-sized files.
+    let header_len = u64::from_le_bytes(prefix[..8].try_into().ok()?);
+    if header_len > 0 && header_len <= MAX_SAFETENSORS_HEADER && prefix[8] == b'{' {
+        return Some(Format::Safetensors);
     }
     None
 }
@@ -211,6 +219,25 @@ mod tests {
             detect_format(Path::new("/x/model.safetensors")),
             Some(Format::Safetensors)
         );
+    }
+
+    #[test]
+    fn detects_safetensors_by_header_shape_without_extension() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = dir.path().join("7c39aa5e");
+        let json = br#"{"t": {"dtype": "F32", "shape": [1]}}"#;
+        let mut bytes = (json.len() as u64).to_le_bytes().to_vec();
+        bytes.extend_from_slice(json);
+        std::fs::write(&path, bytes).expect("write");
+        assert_eq!(detect_format(&path), Some(Format::Safetensors));
+    }
+
+    #[test]
+    fn json_sidecar_is_not_mistaken_for_safetensors() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = dir.path().join("5f9e4d49");
+        std::fs::write(&path, br#"{"version": 1, "truncation": null}"#).expect("write");
+        assert_eq!(detect_format(&path), None);
     }
 
     #[test]

@@ -63,6 +63,21 @@ pub struct StoredArtifact {
     pub size: u64,
     pub format: Option<String>,
     pub references: Vec<Reference>,
+    pub semantics: Option<Semantics>,
+}
+
+/// Display-oriented facts read from the artifact's own header at sync time.
+///
+/// `kind` doubles as the analyzed marker: a row with no semantics has never
+/// been inspected and will be on the next sync.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Semantics {
+    /// `model` for weights, `asset` for tokenizers/vocabularies and similar.
+    pub kind: String,
+    pub name: Option<String>,
+    pub architecture: Option<String>,
+    pub quant: Option<String>,
+    pub params: Option<String>,
 }
 
 /// Aggregate storage accounting for the `ls` footer.
@@ -169,6 +184,7 @@ impl Store {
              );",
         )?;
         migrate_stamp_columns(&conn, "digest_cache")?;
+        migrate_semantics_columns(&conn)?;
         Ok(Self {
             root,
             conn,
@@ -260,6 +276,47 @@ impl Store {
         }
         self.record_shared_stamp(expected, source, source_stamp)?;
         Ok(ImportOutcome::Imported)
+    }
+
+    /// Whether the artifact for `digest` still awaits header inspection.
+    ///
+    /// Returns false for unknown digests — there is no row to attach facts to.
+    ///
+    /// # Errors
+    /// Registry failure.
+    pub fn semantics_pending(&self, digest: &Digest) -> Result<bool, StoreError> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT kind IS NULL FROM artifacts WHERE digest = ?1")?;
+        match statement.query_row(params![digest.to_string()], |row| row.get::<_, bool>(0)) {
+            Ok(pending) => Ok(pending),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(false),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// Records what the artifact's own header says about it.
+    ///
+    /// # Errors
+    /// Registry failure.
+    pub fn record_semantics(
+        &self,
+        digest: &Digest,
+        semantics: &Semantics,
+    ) -> Result<(), StoreError> {
+        self.conn.execute(
+            "UPDATE artifacts SET kind = ?2, name = ?3, architecture = ?4, quant = ?5, params = ?6
+             WHERE digest = ?1",
+            params![
+                digest.to_string(),
+                semantics.kind,
+                semantics.name,
+                semantics.architecture,
+                semantics.quant,
+                semantics.params
+            ],
+        )?;
+        Ok(())
     }
 
     /// Records that `path` (owned by `provider`) references `digest`.
@@ -457,21 +514,35 @@ impl Store {
     /// # Errors
     /// Registry failure, or a corrupt digest in the registry.
     pub fn artifacts(&self) -> Result<Vec<StoredArtifact>, StoreError> {
-        let mut statement = self
-            .conn
-            .prepare("SELECT digest, size, format FROM artifacts ORDER BY size DESC")?;
+        let mut statement = self.conn.prepare(
+            "SELECT digest, size, format, kind, name, architecture, quant, params
+             FROM artifacts ORDER BY size DESC",
+        )?;
         let rows = statement
             .query_map([], |row| {
+                let semantics = row
+                    .get::<_, Option<String>>(3)?
+                    .map(|kind| -> Result<Semantics, rusqlite::Error> {
+                        Ok(Semantics {
+                            kind,
+                            name: row.get(4)?,
+                            architecture: row.get(5)?,
+                            quant: row.get(6)?,
+                            params: row.get(7)?,
+                        })
+                    })
+                    .transpose()?;
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, u64>(1)?,
                     row.get::<_, Option<String>>(2)?,
+                    semantics,
                 ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
 
         let mut artifacts = Vec::with_capacity(rows.len());
-        for (digest_text, size, format) in rows {
+        for (digest_text, size, format, semantics) in rows {
             let Ok(digest) = digest_text.parse::<Digest>() else {
                 continue;
             };
@@ -481,6 +552,7 @@ impl Store {
                 size,
                 format,
                 references,
+                semantics,
             });
         }
         Ok(artifacts)
@@ -568,6 +640,19 @@ pub fn sync_stamp() -> u64 {
         .unwrap_or_default()
         .as_nanos();
     u64::try_from(nanos).unwrap_or(u64::MAX)
+}
+
+fn migrate_semantics_columns(conn: &Connection) -> Result<(), rusqlite::Error> {
+    let mut statement = conn.prepare("PRAGMA table_info(artifacts)")?;
+    let existing = statement
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<HashSet<_>, _>>()?;
+    for column in ["kind", "name", "architecture", "quant", "params"] {
+        if !existing.contains(column) {
+            conn.execute_batch(&format!("ALTER TABLE artifacts ADD COLUMN {column} TEXT;"))?;
+        }
+    }
+    Ok(())
 }
 
 fn migrate_stamp_columns(conn: &Connection, table: &str) -> Result<(), rusqlite::Error> {
@@ -756,6 +841,36 @@ mod tests {
         assert!(store.path_is_shared(&digest, &source).expect("shared"));
         std::fs::write(&source, b"changed").expect("mutate source");
         assert!(!store.path_is_shared(&digest, &source).expect("stale"));
+    }
+
+    #[test]
+    fn semantics_recorded_once_then_no_longer_pending() {
+        let (dir, store) = store();
+        let (source, digest) = digest_of(b"weights", dir.path());
+        store
+            .import_blob(&source, &digest, Some(&Format::Gguf))
+            .expect("import");
+
+        assert!(store.semantics_pending(&digest).expect("pending"));
+        let semantics = Semantics {
+            kind: "model".to_string(),
+            name: Some("Test Model".to_string()),
+            architecture: Some("llama".to_string()),
+            quant: Some("Q4_K_M".to_string()),
+            params: Some("1.7B".to_string()),
+        };
+        store.record_semantics(&digest, &semantics).expect("record");
+
+        assert!(!store.semantics_pending(&digest).expect("pending"));
+        let artifacts = store.artifacts().expect("artifacts");
+        assert_eq!(artifacts[0].semantics.as_ref(), Some(&semantics));
+    }
+
+    #[test]
+    fn semantics_not_pending_for_unknown_digest() {
+        let (_dir, store) = store();
+        let digest = Digest::new(Algorithm::Sha256, vec![7; 32]).expect("digest");
+        assert!(!store.semantics_pending(&digest).expect("pending"));
     }
 
     #[test]

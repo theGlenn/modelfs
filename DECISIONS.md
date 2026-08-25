@@ -56,3 +56,24 @@ No mtime-only heuristics. Per replacement:
 8. `modeld restore` replays the journal with the same writer and stat checks.
 
 Files with `.incomplete`/`.part`/`-partial` markers or active writers are never touched.
+
+## 2026-08-26 — Semantics: header facts are display-only, read once per artifact
+
+`modeld-formats` parses what a weights file says about itself: GGUF `general.*`
+metadata (name, architecture, `file_type` → llama.cpp quant name, `size_label`)
+and the safetensors JSON prologue (dominant dtype by bytes, parameter count from
+shapes). Parsers read headers only — cost independent of model size — and are
+bounded: every length field is checked against a sanity cap before allocation,
+so corrupt files yield errors, never panics or unbounded reads. GGUF v1 and
+big-endian files are rejected as unsupported.
+
+Facts land in registry columns (`kind`, `name`, `architecture`, `quant`,
+`params`) at sync time, read from the canonical blob after verification. `kind`
+(`model` | `asset`) doubles as the analyzed marker; tokenizers/vocabularies are
+classified by reference filename and listed separately in `ls`. Identity stays
+with digests — semantics are presentation, never trusted for dedupe or storage
+decisions.
+
+Safetensors detection for extensionless blobs (HF cache): a plausible u64 LE
+header length followed by `{` is decisive; ASCII JSON sidecars fail the length
+check by construction.

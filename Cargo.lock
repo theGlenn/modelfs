@@ -330,6 +330,7 @@ version = "0.0.1"
 dependencies = [
  "clap",
  "modeld-core",
+ "modeld-formats",
  "modeld-providers",
  "modeld-store",
 ]
@@ -343,6 +344,15 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
+name = "modeld-formats"
+version = "0.0.1"
+dependencies = [
+ "serde_json",
  "tempfile",
  "thiserror",
 ]

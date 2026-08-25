@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 modeld-core.workspace = true
+modeld-formats.workspace = true
 modeld-providers.workspace = true
 modeld-store.workspace = true
 clap.workspace = true

@@ -8,6 +8,7 @@ use std::path::PathBuf;
 
 mod plan;
 mod report;
+mod semantics;
 
 #[derive(Parser)]
 #[command(name = "modeld", version, about = "Local model storage layer")]
@@ -138,7 +139,10 @@ fn sync(min_size: u64) {
             stamp,
         );
         match recorded {
-            Ok(()) => referenced += 1,
+            Ok(()) => {
+                referenced += 1;
+                record_semantics_if_pending(&store, &digest, artifact);
+            }
             Err(error) => {
                 can_prune = false;
                 eprintln!("skip ref {} ({error})", artifact.path.display());
@@ -315,6 +319,26 @@ fn restore() {
             eprintln!("restore failed: {error}");
             std::process::exit(1);
         }
+    }
+}
+
+/// Reads header facts for a newly stored artifact; later syncs skip it.
+fn record_semantics_if_pending(store: &Store, digest: &Digest, artifact: &Artifact) {
+    match store.semantics_pending(digest) {
+        Ok(true) => {
+            let semantics = semantics::analyze(artifact, &store.blob_path(digest));
+            if let Err(error) = store.record_semantics(digest, &semantics) {
+                eprintln!(
+                    "warning: could not record semantics for {} ({error})",
+                    artifact.path.display()
+                );
+            }
+        }
+        Ok(false) => {}
+        Err(error) => eprintln!(
+            "warning: semantics check failed for {} ({error})",
+            artifact.path.display()
+        ),
     }
 }
 
