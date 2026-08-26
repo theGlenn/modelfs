@@ -77,3 +77,20 @@ decisions.
 Safetensors detection for extensionless blobs (HF cache): a plausible u64 LE
 header length followed by `{` is decisive; ASCII JSON sidecars fail the length
 check by construction.
+
+## 2026-08-26 — gc: unreferenced blobs are deletable, with two guards
+
+`modeld gc` deletes store blobs that no provider path references. References are
+only pruned by a *complete* sync, so zero references is a settled fact, not a
+transient one. Two guards keep a blob regardless:
+
+1. Its digest appears in a journaled swap — `restore` rebuilds victims from the
+   canonical blob, so gc would break restore.
+2. A `shared_paths` row for it still stat-matches on disk — the blob is the
+   recorded anchor of a live clone even though no scan currently sees it (e.g.
+   a root was removed from the config).
+
+Deleting a blob never touches clone bytes (copy-on-write): existing copies keep
+their extents. The blob file is removed before its registry rows, so a failed
+delete leaves the artifact intact and retryable. Reported sizes are logical;
+physical reclaim depends on whether other files still share the extents.

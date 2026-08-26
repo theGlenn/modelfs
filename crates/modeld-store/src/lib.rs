@@ -460,6 +460,54 @@ impl Store {
         }
     }
 
+    /// Whether any recorded clone of `digest` is still on disk, unchanged.
+    ///
+    /// Such a path proves the blob is still an anchor for live bytes even if no
+    /// scan currently references it (e.g. its root was removed from the config),
+    /// so `gc` must keep the blob.
+    ///
+    /// # Errors
+    /// Registry failure. A path that cannot be stat-ed counts as not live.
+    pub fn has_live_shared_path(&self, digest: &Digest) -> Result<bool, StoreError> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT path FROM shared_paths WHERE digest = ?1")?;
+        let paths = statement
+            .query_map(params![digest.to_string()], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(paths.iter().any(|path| {
+            self.path_is_shared(digest, Path::new(path))
+                .unwrap_or(false)
+        }))
+    }
+
+    /// Removes the canonical blob and every registry row for `digest`.
+    ///
+    /// Existing clones of the blob keep their bytes (copy-on-write); only the
+    /// store's anchor copy and its bookkeeping disappear.
+    ///
+    /// # Errors
+    /// I/O failure deleting the blob (a missing blob is fine), or registry
+    /// failure. Rows are only dropped after the blob file is gone, so a failed
+    /// delete leaves the artifact intact and retryable.
+    pub fn remove_artifact(&self, digest: &Digest) -> Result<(), StoreError> {
+        match std::fs::remove_file(self.blob_path(digest)) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        self.conn.execute(
+            "DELETE FROM shared_paths WHERE digest = ?1",
+            params![digest.to_string()],
+        )?;
+        self.conn.execute(
+            "DELETE FROM artifacts WHERE digest = ?1",
+            params![digest.to_string()],
+        )?;
+        self.verified_blobs.borrow_mut().remove(digest);
+        Ok(())
+    }
+
     /// Records the current file at `path` as an APFS clone of `digest`.
     ///
     /// # Errors
@@ -841,6 +889,35 @@ mod tests {
         assert!(store.path_is_shared(&digest, &source).expect("shared"));
         std::fs::write(&source, b"changed").expect("mutate source");
         assert!(!store.path_is_shared(&digest, &source).expect("stale"));
+    }
+
+    #[test]
+    fn remove_artifact_drops_blob_and_all_rows() {
+        let (dir, store) = store();
+        let (source, digest) = digest_of(b"weights", dir.path());
+        store
+            .import_blob(&source, &digest, Some(&Format::Gguf))
+            .expect("import");
+        assert!(store.blob_path(&digest).exists());
+
+        store.remove_artifact(&digest).expect("remove");
+
+        assert!(!store.blob_path(&digest).exists());
+        assert!(store.artifacts().expect("artifacts").is_empty());
+        assert!(!store.has_live_shared_path(&digest).expect("live"));
+        // Removal is idempotent: a second call finds nothing and succeeds.
+        store.remove_artifact(&digest).expect("re-remove");
+    }
+
+    #[test]
+    fn live_shared_path_blocks_until_the_clone_changes() {
+        let (dir, store) = store();
+        let (source, digest) = digest_of(b"weights", dir.path());
+        store.import_blob(&source, &digest, None).expect("import");
+
+        assert!(store.has_live_shared_path(&digest).expect("live"));
+        std::fs::write(&source, b"changed").expect("mutate source");
+        assert!(!store.has_live_shared_path(&digest).expect("stale"));
     }
 
     #[test]

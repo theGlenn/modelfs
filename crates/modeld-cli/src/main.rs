@@ -48,6 +48,12 @@ enum Command {
     },
     /// Undo journaled replacements by rebuilding independent copies
     Restore,
+    /// Delete store blobs no provider references anymore
+    Gc {
+        /// Show what would be deleted without touching anything
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 fn main() {
@@ -59,6 +65,7 @@ fn main() {
         Command::Where { query } => locate(&query),
         Command::Dedupe { dry_run, min_size } => dedupe(dry_run, min_size),
         Command::Restore => restore(),
+        Command::Gc { dry_run } => gc(dry_run),
     }
 }
 
@@ -320,6 +327,73 @@ fn restore() {
             std::process::exit(1);
         }
     }
+}
+
+/// Deletes store blobs that nothing references: no provider path, no pending
+/// journaled swap, no live clone recorded in `shared_paths`.
+fn gc(dry_run: bool) {
+    let store = open_store();
+    let journal = open_journal();
+    // A journaled swap needs its canonical blob to restore; without a readable
+    // journal we cannot prove any blob is safe to delete.
+    let journaled: HashSet<String> = match journal.entries() {
+        Ok(entries) => entries
+            .iter()
+            .map(|entry| entry.digest.to_string())
+            .collect(),
+        Err(error) => {
+            eprintln!("cannot read journal, refusing to gc: {error}");
+            std::process::exit(1);
+        }
+    };
+    let artifacts = match store.artifacts() {
+        Ok(artifacts) => artifacts,
+        Err(error) => {
+            eprintln!("cannot read registry: {error}");
+            std::process::exit(1);
+        }
+    };
+
+    let mut removable = Vec::new();
+    let mut kept = Vec::new();
+    for artifact in artifacts {
+        if !artifact.references.is_empty() {
+            continue;
+        }
+        if journaled.contains(&artifact.digest.to_string()) {
+            kept.push((artifact, "journaled swap pending restore"));
+            continue;
+        }
+        match store.has_live_shared_path(&artifact.digest) {
+            Ok(true) => kept.push((artifact, "still anchors a live clone")),
+            Ok(false) => removable.push(artifact),
+            Err(error) => {
+                eprintln!("skip {} ({error})", artifact.digest);
+            }
+        }
+    }
+
+    print!("{}", report::render_gc_plan(&removable, &kept, dry_run));
+    if dry_run || removable.is_empty() {
+        return;
+    }
+
+    let mut freed = 0u64;
+    let mut deleted = 0usize;
+    for artifact in &removable {
+        match store.remove_artifact(&artifact.digest) {
+            Ok(()) => {
+                freed += artifact.size;
+                deleted += 1;
+            }
+            Err(error) => eprintln!("keep {} ({error})", artifact.digest),
+        }
+    }
+    println!(
+        "Freed {} across {} blob(s)",
+        report::human_bytes(freed),
+        deleted
+    );
 }
 
 /// Reads header facts for a newly stored artifact; later syncs skip it.

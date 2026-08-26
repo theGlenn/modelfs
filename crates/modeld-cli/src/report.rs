@@ -175,12 +175,19 @@ pub fn render_ls(
     out
 }
 
-fn render_ls_row(out: &mut String, artifact: &modeld_store::StoredArtifact) {
-    let semantics = artifact.semantics.as_ref();
-    let display_name = semantics
+/// The most human name we have: header name, then any label, then the digest.
+fn display_name(artifact: &modeld_store::StoredArtifact) -> String {
+    artifact
+        .semantics
+        .as_ref()
         .and_then(|s| s.name.clone())
         .or_else(|| artifact.references.iter().find_map(|r| r.label.clone()))
-        .unwrap_or_else(|| short_digest(&artifact.digest.to_string()));
+        .unwrap_or_else(|| short_digest(&artifact.digest.to_string()))
+}
+
+fn render_ls_row(out: &mut String, artifact: &modeld_store::StoredArtifact) {
+    let semantics = artifact.semantics.as_ref();
+    let display_name = display_name(artifact);
     let mut providers: Vec<&str> = artifact
         .references
         .iter()
@@ -212,6 +219,45 @@ pub fn render_totals(totals: modeld_store::Totals) -> String {
         human_bytes(totals.logical_bytes),
         human_bytes(saved)
     )
+}
+
+/// Renders the gc plan: unreferenced blobs to delete, guarded blobs kept.
+pub fn render_gc_plan(
+    removable: &[modeld_store::StoredArtifact],
+    kept: &[(modeld_store::StoredArtifact, &str)],
+    dry_run: bool,
+) -> String {
+    let mut out = String::new();
+    let verb = if dry_run { "Would delete" } else { "Deleting" };
+    for artifact in removable {
+        let _ = writeln!(
+            out,
+            "{verb} {}  {}  ({})",
+            artifact.digest,
+            display_name(artifact),
+            human_bytes(artifact.size)
+        );
+    }
+    for (artifact, reason) in kept {
+        let _ = writeln!(
+            out,
+            "keep {}  {}  ({reason})",
+            artifact.digest,
+            display_name(artifact)
+        );
+    }
+    let total: u64 = removable.iter().map(|artifact| artifact.size).sum();
+    if removable.is_empty() {
+        let _ = writeln!(out, "Nothing to gc — every blob is referenced.");
+    } else {
+        let _ = writeln!(
+            out,
+            "{} unreferenced blob(s), {} reclaimable",
+            removable.len(),
+            human_bytes(total)
+        );
+    }
+    out
 }
 
 /// Renders `where` results: canonical blob plus every reference.
