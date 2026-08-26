@@ -1,0 +1,30 @@
+crates/modeld-store/src/lib.rs
+  s_b26234694e2108::t_568ef6d3f1b6ec 478-481
+  s_b26234694e2108::t_ad2e898f26497a 894-922
+  s_b26234694e2108::t_d714e59d41be1c 463-477,482-510
+crates/modeld-cli/src/report.rs
+  s_b26234694e2108::t_27c69fcc7390e3 178-182,185-190
+  s_b26234694e2108::t_e521a05fd676a9 224-262
+crates/modeld-cli/src/main.rs
+  s_b26234694e2108::t_053721fc168afb 332-398
+  s_b26234694e2108::t_d70a9856c2e7f4 68
+  s_b26234694e2108::t_f3c8f4ff86a275 51-56
+DECISIONS.md
+  s_b26234694e2108::t_a9cae68397cda7 80-96
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "ec06b821d1b4aa5abe9c62491b61792a70619fc9",
+  "prompts": {},
+  "sessions": {
+    "s_b26234694e2108": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "33891c04-0255-4a50-970f-007ed3d58c28",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Glenn Sonna <kenpachi.os@gmail.com>"
+    }
+  }
+}
