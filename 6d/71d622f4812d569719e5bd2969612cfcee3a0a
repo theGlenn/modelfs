@@ -1,0 +1,55 @@
+crates/modeld-store/src/lib.rs
+  s_296dcf387db366::t_5b7339237829f8 200,232-233,235-237,260,269,282,311,729,742,1033,1035,1037-1038,1043-1083,1085-1086,1088,1091,1097,1099
+  s_296dcf387db366::t_c994f4e2baf388 8,11-13,51-58,101-105,140-143,177,189,228-231,255-259,261-268,270-281,283-286,301,407-409,448,450-452,474,480-485,526-527,532-535,576,578-580,707-728,730-741,743-752,1034,1036,1039-1042,1084,1087,1089-1090,1092-1096,1098,1100-1124
+DECISIONS.md
+  s_296dcf387db366::t_2c7cb9597feeff 103
+  s_296dcf387db366::t_f41730e1876f90 97-102,104-165
+crates/modeld-cli/src/consolidation.rs
+  s_296dcf387db366::t_0a0fd3721335d8 26-27,134-138
+  s_296dcf387db366::t_0df60e929778eb 1-25,28-133,139-183
+crates/modeld-cli/src/daemon.rs
+  s_296dcf387db366::t_0a0fd3721335d8 108-151,298-299
+  s_296dcf387db366::t_df6f0598a991a0 237
+  s_296dcf387db366::t_8b701ba34cdf7a 1-107,152-236,238-297,300-385
+crates/modeld-cli/src/main.rs
+  s_296dcf387db366::t_70c3fb62ad1f06 5
+  s_296dcf387db366::t_e319a6cbe0a0a5 2,4,7-8,10-12,14,16,18,64-72,85,120-121,125-127,129-132,134,136-139,179,259-261,266,291,356-357,374,388-419
+crates/modeld-cli/src/schedule.rs
+  s_296dcf387db366::t_391585bf7ff884 167
+  s_296dcf387db366::t_e2b627d9230a8d 1-166,168-172
+crates/modeld-cli/src/sync.rs
+  s_296dcf387db366::t_0a0fd3721335d8 45,178,188
+  s_296dcf387db366::t_40fac56f96657e 1-44,46-177,179-187,189-363
+Cargo.lock
+  s_296dcf387db366::t_f919a947ecd5ba 53,64,186,213-221,295-314,327-346,370-375,382-393,403-405,454-480,547,628-647,692,796-801,808,817-825,835-899
+Cargo.toml
+  s_296dcf387db366::t_ea0695af6f0cfa 57-58
+crates/modeld-cli/Cargo.toml
+  s_296dcf387db366::t_a4cc9d2d551b20 20-24
+crates/modeld-cli/src/events.rs
+  s_296dcf387db366::t_9e6793f8e2880e 1-175
+crates/modeld-cli/src/plan.rs
+  s_296dcf387db366::t_08bfcefd917220 11,24,35-53
+crates/modeld-cli/src/reconcile.rs
+  s_296dcf387db366::t_ddb2066bea82d2 1-163
+crates/modeld-cli/src/semantics.rs
+  s_296dcf387db366::t_e22ef2daee0a45 31-34,36,46-50,59-60,62
+crates/modeld-core/src/apfs.rs
+  s_296dcf387db366::t_84a7d5d3f42937 12-14,18,20,63-106,140-189
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "6d71d622f4812d569719e5bd2969612cfcee3a0a",
+  "prompts": {},
+  "sessions": {
+    "s_296dcf387db366": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6a2f4fb7-066e-4fba-b1a6-1e7457694902",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Glenn Sonna <kenpachi.os@gmail.com>"
+    }
+  }
+}
