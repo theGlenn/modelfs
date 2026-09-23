@@ -1,15 +1,81 @@
-# modeld
+# ModelFS
 
-**One copy of every local AI model on your Mac, however many apps use it.**
+**ModelFS keeps one copy of every local AI model on your Mac, however many apps use it.**
 
-Ollama, LM Studio, the Hugging Face cache, and every project's `fixtures/models`
-folder each keep their own copy of the model files they download. Pull the same
-GGUF into three of them and it takes three times the disk. `modeld` finds
-byte-identical model files and turns the duplicates into APFS clones: every app
-keeps its files exactly where it expects them, and the bytes live on disk once.
+Ollama, LM Studio, and the Hugging Face cache each store their own copies of
+model files. Download the same GGUF into all three and it takes three times
+the disk space.
 
+The `modeld` CLI finds byte-identical model files and turns the duplicates into
+APFS clones. Every app keeps its files exactly where it expects them, while the
+copies share the same bytes on disk.
+
+With `modeld`, you can:
+
+- Find model folders and report exact duplicates with `doctor` and `scan`.
+- Browse models across apps and locate their files with `sync`, `ls`, and `where`.
+- Preview disk savings with `dedupe --dry-run`, then consolidate with `dedupe`.
+- Keep new downloads deduplicated automatically with `daemon install`.
+- Undo replacements with `restore`.
+
+ModelFS is in early development. See [How it stays safe](#how-it-stays-safe).
+
+## Install
+
+Requirements:
+
+- macOS
+- Rust 1.95
+- Git
+
+```sh
+git clone https://github.com/theGlenn/modelfs.git
+cd modelfs
+cargo install --locked --path crates/modeld-cli
+modeld --version
 ```
-$ modeld ls
+
+## Quick start
+
+1. Find model folders:
+
+   ```sh
+   modeld doctor
+   ```
+
+2. Scan for duplicates (read-only):
+
+   ```sh
+   modeld scan
+   ```
+
+   To include your own model folders, [add them to the config](#what-gets-scanned).
+
+3. Preview, then deduplicate:
+
+   ```sh
+   modeld dedupe --dry-run
+   modeld dedupe
+   ```
+
+4. Browse models across apps:
+
+   ```sh
+   modeld sync
+   modeld ls
+   modeld where qwen
+   ```
+
+5. Enable automatic deduplication (optional):
+
+   ```sh
+   modeld daemon install
+   modeld daemon status
+   ```
+
+Example `modeld ls` output:
+
+```text
 MODEL                                        FORMAT       QUANT         SIZE  USED BY
 Qwen/Qwen3.5-0.8B: model.safetensors-00001-… safetensors  BF16        1.7 GB  huggingface
 Bonsai-8B                                    GGUF         -           1.2 GB  huggingface
@@ -25,91 +91,38 @@ Logical usage:   5.1 GB
 Deduplicated:    532.5 MB
 ```
 
-Status: early and macOS-only, running on its author's Mac. The safety protocol is
-deliberately paranoid (see [How it stays safe](#how-it-stays-safe)), and every
-change it makes can be undone with `modeld restore`.
+## CLI reference
 
-## Why clones, not hardlinks or symlinks
-
-An APFS clone (`clonefile(2)`) shares the underlying disk blocks, so it costs
-the same as a hardlink, but each path keeps its own inode. If an app later
-rewrites its copy, copy-on-write gives it private blocks; the other copies
-never change. Apps cannot tell a clone from the file they downloaded, so no
-plugins, config changes, or symlinks are needed.
-
-## Requirements
-
-- macOS, with your models on an APFS volume (the default for the system disk)
-- A recent stable Rust toolchain (edition 2024; developed on Rust 1.95)
-
-## Install
-
-```sh
-cargo install --path crates/modeld-cli   # puts `modeld` in ~/.cargo/bin
-```
-
-## Quick start
-
-1. See which model folders modeld found:
-
-   ```sh
-   modeld doctor
-   ```
-
-2. Get a read-only duplicate report (changes nothing):
-
-   ```sh
-   modeld scan
-   ```
-
-3. Preview, then consolidate duplicates:
-
-   ```sh
-   modeld dedupe --dry-run
-   modeld dedupe
-   ```
-
-4. Build the global view, then browse it:
-
-   ```sh
-   modeld sync
-   modeld ls
-   modeld where qwen
-   ```
-
-5. Let the daemon keep things deduplicated from now on, starting at every
-   login:
-
-   ```sh
-   modeld daemon install
-   modeld daemon status
-   ```
-
-## Commands
+Use `modeld <command> --help` for options.
 
 | Command | What it does | Changes files? |
 |---|---|---|
-| `doctor` | Lists detected model folders and what is excluded | no |
+| `doctor` | Lists detected model folders and excluded paths | no |
 | `scan` | Inventories model files and reports exact duplicates | no |
-| `sync` | Registers every model in the store (`~/.modeld`) and reads model facts from file headers | store only |
+| `sync` | Imports models into `~/.modeld` and indexes their metadata | store only |
 | `ls` | Lists stored models, their format, quantization, size, and which apps use them | no |
-| `where <query>` | Shows the stored copy and every path using models matching `<query>` | no |
-| `dedupe [--dry-run]` | Replaces byte-identical duplicates with clones of the stored copy | yes, undoable |
-| `restore` | Undoes every replacement, rebuilding fully independent copies | yes |
-| `gc [--dry-run]` | Deletes stored copies that nothing uses anymore | store only |
-| `daemon [--dry-run]` | Watches model folders in the foreground and keeps them deduplicated | yes, undoable |
-| `daemon install` / `uninstall` / `status` | Manages the login agent that runs the daemon in the background | — |
+| `where <query>` | Finds paths for matching models | no |
+| `dedupe [--dry-run]` | Replaces duplicates with APFS clones | yes, undoable |
+| `restore` | Rebuilds independent copies | yes |
+| `gc [--dry-run]` | Deletes unused stored copies | store only |
+| `daemon [--dry-run]` | Runs automatic deduplication in the foreground | yes, undoable; store only with `--dry-run` |
+| `daemon install` / `uninstall` / `status` | Manages the background daemon | — |
+
+`scan`, `sync`, `dedupe`, and `daemon` scan files of at least 1 MiB by default.
+Use `--min-size <bytes>` to change this.
 
 ## What gets scanned
 
-| Source | Location | Notes |
-|---|---|---|
-| Ollama | `~/.ollama/models` (or `$OLLAMA_MODELS`) | Blob names are SHA-256 digests |
-| Hugging Face | `~/.cache/huggingface/hub` (or `$HF_HOME`, `$HF_HUB_CACHE`) | The Xet chunk cache is excluded and never touched; MLX models live here too |
-| LM Studio | `~/.lmstudio/models` | Loose files; hashed on demand |
-| Your folders | Anything listed in `~/.modeld/config.toml` | Shown as `manual` |
+| Source | Location |
+|---|---|
+| Ollama | `~/.ollama/models` (or `$OLLAMA_MODELS`) |
+| Hugging Face | `~/.cache/huggingface/hub` (or `$HF_HOME`, `$HF_HUB_CACHE`) |
+| LM Studio | `~/.lmstudio/models` |
+| Your folders | Paths listed in `~/.modeld/config.toml` |
 
-Add your own folders, including glob patterns, in `~/.modeld/config.toml`:
+The Hugging Face scan includes cached MLX models and excludes the Xet chunk cache.
+
+Add folders or glob patterns to `~/.modeld/config.toml`:
 
 ```toml
 [scan]
@@ -119,22 +132,14 @@ roots = [
 ]
 ```
 
-Symlinked aliases of the same folder are only counted once, and nested roots
-never make a file look like its own duplicate. Only files of 1 MiB or more are
-considered (`--min-size` changes that).
-
 ## The daemon
 
-`modeld daemon install` sets up a launchd login agent that runs
-`modeld daemon` in the background at low priority. It watches every scanned
-folder, plus `~/.modeld/config.toml`, for changes:
+`modeld daemon install` starts the daemon and enables it at login. It watches
+your model folders and config for changes:
 
-- A new download is imported once it has stopped changing for 5 minutes, so
-  half-finished files are never stored.
-- A file that duplicates a stored model (a second app downloading it, or a
-  re-download after you deleted it) becomes a clone of the stored copy.
-- It also checks everything every 15 minutes, in case it missed an event or
-  a new project folder matched a pattern in your config.
+- Imports downloads after 5 minutes without changes.
+- Replaces duplicates with clones of stored models.
+- Rescans every 15 minutes to catch missed changes.
 
 ```
 $ tail ~/.modeld/daemon.log
@@ -144,96 +149,65 @@ $ tail ~/.modeld/daemon.log
 2026-09-23T21:45:21Z pass: 1 clone(s) made (2.6 GB freed)
 ```
 
-To see what it would do without letting it change anything, run
-`modeld daemon --dry-run` in a terminal. The agent runs its own copy of the
-binary (`~/.modeld/bin/modeld`), so after upgrading modeld, run
-`modeld daemon install` again. Only one daemon runs at a time: a second one
-waits and takes over when the first exits.
+`modeld daemon --dry-run` previews replacements. It updates the store and
+registry without changing your apps' files.
+
+After upgrading the CLI, run `modeld daemon install` again to update the daemon.
+
+## How APFS clones work
+
+APFS clones share disk space. Editing or deleting one copy leaves the others
+unchanged. Apps keep using their existing paths without configuration changes.
 
 ## How it stays safe
 
-Replacing a file that an app owns is the risky part, so each replacement:
-
-1. **Hashes both files in full** and proceeds only when the SHA-256 digests
-   match. Digests read from file names are treated as hints, never as proof.
-2. **Leaves busy files alone.** Files written in the last 5 minutes, files
-   another process has open for writing (checked with `lsof`), partial
-   downloads, and files with several hardlinks are all skipped.
-3. **Swaps atomically.** The clone is built next to the original, verified,
-   and exchanged with it in one step (`renamex_np` with `RENAME_SWAP`). If
-   anything changed in the meantime, the swap is rolled back.
-4. **Journals before releasing space.** Each swap is written to
-   `~/.modeld/journal.jsonl` before the original bytes are freed, so
-   `modeld restore` can always rebuild an independent copy.
-5. **Preserves timestamps and permissions.** LM Studio, for example, keys its
-   caches on a file's modification time.
-
-The daemon and the commands that change files take turns through a lock, so a
-manual `dedupe` never races a daemon pass.
+- Verifies both files' full contents before replacing a duplicate.
+- Skips recently modified files, files open for writing, partial downloads,
+  and files with multiple hardlinks.
+- Replaces files atomically and rolls back if they changed during the operation.
+- Records each replacement so `modeld restore` can undo it.
+- Preserves timestamps and permissions.
 
 ## Measuring the savings
 
-Finder and `du` report every clone at full size, because each one does
-contain the whole file. To see the real effect, compare free space on the
-volume (`df -h /`) before and after. Sizes reported as "freed" are the bytes
-modeld stopped storing twice; the disk actually gets them back only once no
-other file still shares those blocks.
+Finder and `du` count each clone at full size. Compare `df -h /` before and after
+deduplication to see the change in free space. Reported savings can differ if
+other files still share the replaced data.
 
 ## Undoing everything
 
-Run these in this order: the journal in `~/.modeld` is what `restore` needs.
+Restore needs enough free space for independent copies. Run these commands in
+order, and delete `~/.modeld` only after the restore succeeds:
 
 ```sh
 modeld daemon uninstall   # stop the background agent
-modeld restore            # rebuild independent copies; needs the space back
-rm -rf ~/.modeld          # remove the store, registry, journal, and log
-```
-
-Deleting the store never touches the files your apps use: clones keep their
-data after the original is gone.
-
-## Where things live
-
-```
-~/.modeld/
-├── blobs/           one stored copy per unique model (sha256-<hex>)
-├── registry.db      SQLite: models, which paths use them, cached digests
-├── journal.jsonl    every replacement, for `modeld restore`
-├── config.toml      your extra scan folders (optional)
-├── daemon.log       what the daemon did
-└── bin/modeld       the copy the login agent runs
-~/Library/LaunchAgents/dev.modeld.daemon.plist
+modeld restore           # rebuild independent copies
+rm -rf ~/.modeld          # remove ModelFS data
 ```
 
 ## Limitations
 
-- macOS and APFS only. Linux support (reflinks on Btrfs/XFS) is planned but
-  not built.
-- Clones only work within one volume, so models on an external drive are
-  skipped.
-- Only byte-identical files are deduplicated. Different quantizations or
-  formats of the same model are separate files.
-- The daemon's log is not rotated yet.
+- Requires APFS. Models on a different volume from `~/.modeld` are skipped.
+- Different quantizations or formats are not deduplicated.
+- Linux support is planned.
+- The daemon log is not yet rotated.
 
 ## Development
 
 ```sh
 cargo test --workspace
-cargo clippy --workspace --all-targets   # pedantic lints; kept at zero warnings
+cargo clippy --workspace --all-targets
 cargo fmt --all
 ```
 
-| Crate | Responsibility |
-|---|---|
-| `modeld-core` | Artifacts, digests, duplicate detection, APFS syscalls, the replacement protocol and journal |
-| `modeld-providers` | Finding model folders and scanning them (Ollama, Hugging Face, LM Studio, config roots) |
-| `modeld-formats` | Bounded GGUF and safetensors header parsers |
-| `modeld-store` | Content-addressed blob store, SQLite registry, store lock |
-| `modeld-cli` | The `modeld` binary: commands, the sync step, the daemon, the launchd agent |
-
-The reasoning behind the design lives in [`DECISIONS.md`](DECISIONS.md), and
-notes on how each app stores its models are in [`providers/`](providers/).
+See [`DECISIONS.md`](DECISIONS.md) for design decisions and [`providers/`](providers/)
+for notes on how each app stores its models.
 
 ## License
 
-Dual-licensed under MIT or Apache-2.0, at your option.
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
+[MIT license](LICENSE-MIT), at your option.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in this work by you, as defined in the Apache-2.0 license, shall
+be dual licensed as above, without any additional terms or conditions.
