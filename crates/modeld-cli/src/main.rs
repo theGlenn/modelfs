@@ -10,6 +10,7 @@ use std::time::Duration;
 mod consolidation;
 mod daemon;
 mod events;
+mod launchd;
 mod plan;
 mod reconcile;
 mod report;
@@ -63,13 +64,25 @@ enum Command {
     },
     /// Watch model folders; import settled downloads and clone duplicates
     Daemon {
+        #[command(subcommand)]
+        action: Option<DaemonAction>,
         /// Keep the registry in sync but only log clones, never make them
-        #[arg(long)]
+        #[arg(long, global = true)]
         dry_run: bool,
         /// Ignore files smaller than this many bytes
-        #[arg(long, default_value_t = modeld_providers::scan::DEFAULT_MIN_SIZE)]
+        #[arg(long, global = true, default_value_t = modeld_providers::scan::DEFAULT_MIN_SIZE)]
         min_size: u64,
     },
+}
+
+#[derive(Subcommand)]
+enum DaemonAction {
+    /// Run the daemon at every login (launchd agent) and start it now
+    Install,
+    /// Stop the daemon and remove the login agent
+    Uninstall,
+    /// Show whether the login agent is installed and running
+    Status,
 }
 
 fn main() {
@@ -82,7 +95,16 @@ fn main() {
         Command::Dedupe { dry_run, min_size } => dedupe(dry_run, min_size),
         Command::Restore => restore(),
         Command::Gc { dry_run } => gc(dry_run),
-        Command::Daemon { dry_run, min_size } => daemon(dry_run, min_size),
+        Command::Daemon {
+            action,
+            dry_run,
+            min_size,
+        } => match action {
+            None => daemon(dry_run, min_size),
+            Some(DaemonAction::Install) => install_agent(dry_run, min_size),
+            Some(DaemonAction::Uninstall) => uninstall_agent(),
+            Some(DaemonAction::Status) => agent_status(),
+        },
     }
 }
 
@@ -427,6 +449,55 @@ fn daemon(dry_run: bool, min_size: u64) {
     }
 }
 
+fn install_agent(dry_run: bool, min_size: u64) {
+    let home = home_dir();
+    let arguments = launchd::daemon_arguments(dry_run, min_size);
+    match launchd::install(&home, arguments) {
+        Ok(paths) => {
+            println!("Installed login agent {}", launchd::LABEL);
+            println!("  binary  {}", paths.binary.display());
+            println!("  agent   {}", paths.plist.display());
+            println!("  log     {}", paths.log.display());
+            agent_status();
+        }
+        Err(error) => {
+            eprintln!("install failed: {error}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn uninstall_agent() {
+    match launchd::uninstall(&home_dir()) {
+        Ok(true) => println!("Stopped and removed login agent {}", launchd::LABEL),
+        Ok(false) => println!("No login agent was installed."),
+        Err(error) => {
+            eprintln!("uninstall failed: {error}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn agent_status() {
+    let home = home_dir();
+    let status = launchd::status(&home);
+    let state = match (status.installed, status.loaded, status.pid) {
+        (_, true, Some(pid)) => format!("running (pid {pid})"),
+        (_, true, None) => "loaded, not running".to_string(),
+        (true, false, _) => "installed, not loaded (starts at next login)".to_string(),
+        (false, false, _) => "not installed".to_string(),
+    };
+    println!("Login agent: {state}");
+    let log = launchd::AgentPaths::for_home(&home).log;
+    if let Ok(contents) = std::fs::read_to_string(&log) {
+        println!("Recent log ({}):", log.display());
+        let lines: Vec<&str> = contents.lines().collect();
+        for line in &lines[lines.len().saturating_sub(5)..] {
+            println!("  {line}");
+        }
+    }
+}
+
 /// Serializes this command with the daemon and other mutating commands.
 fn lock_store() -> StoreLock {
     let home = modeld_home();
@@ -458,7 +529,9 @@ fn open_journal() -> modeld_core::consolidate::Journal {
 }
 
 fn modeld_home() -> PathBuf {
-    std::env::var_os("HOME")
-        .map_or_else(|| PathBuf::from("/"), PathBuf::from)
-        .join(".modeld")
+    home_dir().join(".modeld")
+}
+
+fn home_dir() -> PathBuf {
+    std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from)
 }

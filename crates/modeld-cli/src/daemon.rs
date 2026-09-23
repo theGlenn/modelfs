@@ -48,6 +48,10 @@ const RETRY_AFTER_ERROR: Duration = Duration::from_mins(1);
 pub fn run(store_root: &Path, options: PassOptions) -> Result<(), Box<dyn std::error::Error>> {
     let stop = stop_flag()?;
     std::fs::create_dir_all(store_root)?;
+    let Some(_instance) = claim_instance(store_root, &stop)? else {
+        log("daemon stopped");
+        return Ok(());
+    };
     let (events_tx, events) = mpsc::channel();
     let mut watches = Watches::new(notify::recommended_watcher(events_tx)?);
     watches.watch_store(store_root)?;
@@ -241,6 +245,39 @@ fn utc_timestamp(time: SystemTime) -> String {
     )
 }
 
+/// Lock held for a daemon's lifetime so two daemons never watch one store.
+fn try_claim_instance(store_root: &Path) -> std::io::Result<Option<std::fs::File>> {
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(store_root.join("daemon.lock"))?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(file)),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+        Err(std::fs::TryLockError::Error(error)) => Err(error),
+    }
+}
+
+/// Waits until this process is the store's only daemon, or a stop signal.
+///
+/// A second daemon (say, a terminal run while the login agent is up) takes
+/// over when the first exits instead of duplicating its passes.
+fn claim_instance(store_root: &Path, stop: &AtomicBool) -> std::io::Result<Option<std::fs::File>> {
+    let mut announced = false;
+    while !stop.load(Ordering::Relaxed) {
+        if let Some(claim) = try_claim_instance(store_root)? {
+            return Ok(Some(claim));
+        }
+        if !announced {
+            log("another modeld daemon is running; waiting to take over");
+            announced = true;
+        }
+        std::thread::sleep(TICK);
+    }
+    Ok(None)
+}
+
 fn log(message: impl std::fmt::Display) {
     println!("{} {message}", utc_timestamp(SystemTime::now()));
 }
@@ -357,6 +394,18 @@ mod tests {
             warnings: vec![],
         };
         assert_eq!(summarize(&idle), "pass: nothing new");
+    }
+
+    #[test]
+    fn second_daemon_cannot_claim_a_store_until_the_first_exits() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+
+        let first = try_claim_instance(dir.path()).expect("claim");
+        assert!(first.is_some());
+        assert!(try_claim_instance(dir.path()).expect("claim").is_none());
+        drop(first);
+
+        assert!(try_claim_instance(dir.path()).expect("claim").is_some());
     }
 
     #[test]

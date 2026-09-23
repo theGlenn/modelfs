@@ -396,6 +396,7 @@ name = "modeld-cli"
 version = "0.0.1"
 dependencies = [
  "clap",
+ "libc",
  "modeld-core",
  "modeld-formats",
  "modeld-providers",
