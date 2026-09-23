@@ -225,7 +225,9 @@ fn read_string<R: Read + Seek>(
         skip(reader, length)?;
         return Ok(None);
     }
-    let mut bytes = vec![0u8; usize::try_from(length).unwrap_or(0)];
+    let length = usize::try_from(length)
+        .map_err(|_overflow| FormatError::Malformed(format!("string length {length} too large")))?;
+    let mut bytes = vec![0u8; length];
     reader.read_exact(&mut bytes)?;
     Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
 }

@@ -3,8 +3,8 @@
 //! Protocol per replacement (see DECISIONS.md, "Conservative dedupe protocol"):
 //!
 //! 1. Fully hash the canonical file; require the expected digest.
-//! 2. Snapshot the victim's stat (size, mtime, mode, inode); refuse recently
-//!    written files.
+//! 2. Snapshot the victim's stat (size, mtime, mode, inode, link count); refuse
+//!    hard-linked or recently written files.
 //! 3. Fully hash the victim; require the same digest; re-stat to detect writes
 //!    that raced the hash.
 //! 4. Clone canonical to a temp name in the victim's directory, re-stat once more,
@@ -33,6 +33,9 @@ use std::time::{Duration, SystemTime};
 /// `.part`/`.incomplete` staging names. Five minutes comfortably exceeds observed
 /// provider write patterns while barely delaying dedupe of settled files.
 pub const RECENT_WRITE_WINDOW: Duration = Duration::from_mins(5);
+
+/// Marker in the temp siblings consolidation creates next to each victim.
+const SWAP_TEMP_MARKER: &str = ".modeld-tmp-";
 
 /// One planned replacement: make `victim` an APFS clone of `canonical`.
 #[derive(Debug, Clone)]
@@ -227,6 +230,9 @@ struct StatSnapshot {
     mtime_nanos: u32,
     inode: u64,
     mode: u32,
+    /// A `link(2)` changes nothing else a snapshot sees, yet a swap would then
+    /// replace one name while the old bytes live on under the other.
+    nlink: u64,
 }
 
 impl StatSnapshot {
@@ -246,6 +252,7 @@ impl StatSnapshot {
             mtime_nanos: u32::try_from(metadata.mtime_nsec()).unwrap_or(0),
             inode: metadata.ino(),
             mode: metadata.mode(),
+            nlink: metadata.nlink(),
         }
     }
 
@@ -265,6 +272,9 @@ fn replace_with_clone(
     verify_digest(&replacement.canonical, &replacement.digest, "canonical")?;
 
     let before = StatSnapshot::of(&replacement.victim)?;
+    if before.nlink != 1 {
+        return Err("file has other hard links; cloning one name frees nothing".to_string());
+    }
     if before.modified_within(RECENT_WRITE_WINDOW) {
         return Err("recently written; may still be downloading".to_string());
     }
@@ -424,6 +434,7 @@ fn ensure_unchanged(path: &Path, before: StatSnapshot, when: &str) -> Result<(),
 fn ensure_no_open_writers(path: &Path) -> Result<(), String> {
     let output = Command::new("/usr/sbin/lsof")
         .arg("-Fa")
+        .arg("--")
         .arg(path)
         .output()
         .map_err(|error| format!("cannot check open writers: {error}"))?;
@@ -481,7 +492,22 @@ fn temp_sibling(path: &Path) -> Result<PathBuf, String> {
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("artifact");
-    Ok(parent.join(format!(".{name}.modeld-tmp-{}", std::process::id())))
+    Ok(parent.join(format!(".{name}{SWAP_TEMP_MARKER}{}", std::process::id())))
+}
+
+/// Whether `name` has the exact shape of a [`temp_sibling`]: `.<name>.modeld-tmp-<pid>`.
+///
+/// A model file that merely contains the marker (`model.modeld-tmp-v2.gguf`)
+/// does not match.
+#[must_use]
+pub fn is_swap_temp(name: &std::ffi::OsStr) -> bool {
+    let Some(name) = name.to_str() else {
+        return false;
+    };
+    name.starts_with('.')
+        && name
+            .rsplit_once(SWAP_TEMP_MARKER)
+            .is_some_and(|(_, pid)| !pid.is_empty() && pid.bytes().all(|b| b.is_ascii_digit()))
 }
 
 fn restore_file_attributes(path: &Path, mode: u32, mtime_epoch_secs: u64, mtime_nanos: u32) {
@@ -561,6 +587,17 @@ mod tests {
 
         assert!(report.completed.is_empty());
         assert!(report.refused[0].reason.contains("recently written"));
+    }
+
+    #[test]
+    fn refuses_hard_linked_victim() {
+        let (dir, replacement, journal) = fixture();
+        std::fs::hard_link(&replacement.victim, dir.path().join("other-name.gguf")).expect("link");
+
+        let report = consolidate(std::slice::from_ref(&replacement), &journal);
+
+        assert!(report.completed.is_empty());
+        assert!(report.refused[0].reason.contains("hard links"));
     }
 
     #[test]

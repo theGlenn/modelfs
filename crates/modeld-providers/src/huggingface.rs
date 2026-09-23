@@ -50,6 +50,7 @@ pub fn collect(root: &ProviderRoot, min_size: u64, outcome: &mut ScanOutcome) {
             outcome.skipped.push(Skipped {
                 path: root.root.clone(),
                 reason: format!("cannot list cache root: {error}"),
+                untrackable: false,
             });
             return;
         }
@@ -61,6 +62,7 @@ pub fn collect(root: &ProviderRoot, min_size: u64, outcome: &mut ScanOutcome) {
                 outcome.skipped.push(Skipped {
                     path: root.root.clone(),
                     reason: format!("cannot read directory entry: {error}"),
+                    untrackable: false,
                 });
                 continue;
             }
@@ -91,6 +93,7 @@ fn collect_repo(repo_dir: &Path, repo: &str, min_size: u64, outcome: &mut ScanOu
             outcome.skipped.push(Skipped {
                 path: blobs,
                 reason: format!("cannot list blobs: {error}"),
+                untrackable: false,
             });
             return;
         }
@@ -102,6 +105,7 @@ fn collect_repo(repo_dir: &Path, repo: &str, min_size: u64, outcome: &mut ScanOu
                 outcome.skipped.push(Skipped {
                     path: repo_dir.to_path_buf(),
                     reason: format!("cannot read directory entry: {error}"),
+                    untrackable: false,
                 });
                 continue;
             }
@@ -112,6 +116,7 @@ fn collect_repo(repo_dir: &Path, repo: &str, min_size: u64, outcome: &mut ScanOu
                 outcome.skipped.push(Skipped {
                     path: entry.path(),
                     reason: format!("cannot stat: {error}"),
+                    untrackable: false,
                 });
                 continue;
             }

@@ -7,11 +7,9 @@
 //! reports symlink-resolved paths (`/private/var/...` for `/var/...`), so every
 //! prefix is matched in both its configured and canonical spelling.
 
+use modeld_core::consolidate;
 use modeld_providers::ProviderRoot;
 use std::path::{Path, PathBuf};
-
-/// Marker in the temp siblings consolidation creates next to each victim.
-const SWAP_TEMP_MARKER: &str = ".modeld-tmp-";
 
 /// Relevance test for watcher paths.
 #[derive(Debug)]
@@ -53,9 +51,7 @@ impl EventFilter {
         if self.config.iter().any(|config| path == config) {
             return true;
         }
-        let is_swap_temp = path
-            .file_name()
-            .is_some_and(|name| name.to_string_lossy().contains(SWAP_TEMP_MARKER));
+        let is_swap_temp = path.file_name().is_some_and(consolidate::is_swap_temp);
         let in_store = self.store.iter().any(|store| path.starts_with(store));
         let excluded = self.excluded.iter().any(|ex| path.starts_with(ex));
         !is_swap_temp && !in_store && !excluded
@@ -133,6 +129,13 @@ mod tests {
         let f = fixture();
         let temp = f.dir.path().join("hf/blobs/.abc123.modeld-tmp-4242");
         assert!(!f.filter.is_relevant(&temp));
+    }
+
+    #[test]
+    fn model_named_like_a_swap_temp_is_relevant() {
+        let f = fixture();
+        let model = f.dir.path().join("hf/blobs/model.modeld-tmp-v2.gguf");
+        assert!(f.filter.is_relevant(&model));
     }
 
     #[test]

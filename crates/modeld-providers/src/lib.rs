@@ -76,6 +76,7 @@ fn detect_in(home: &Path) -> Detection {
         Err(reason) => detection.unreadable.push(Skipped {
             path: config_path,
             reason,
+            untrackable: false,
         }),
     }
     detection
