@@ -48,19 +48,13 @@ fn parse_header(header: &[u8]) -> Result<ModelInfo, FormatError> {
         let Some(dtype) = tensor.get("dtype").and_then(serde_json::Value::as_str) else {
             continue;
         };
-        let elements = tensor
-            .get("shape")
-            .and_then(serde_json::Value::as_array)
-            .map_or(0u128, |shape| {
-                shape
-                    .iter()
-                    .filter_map(serde_json::Value::as_u64)
-                    .map(u128::from)
-                    .product()
-            });
+        let elements = element_count(tensor)?;
         param_count = param_count.saturating_add(u64::try_from(elements).unwrap_or(u64::MAX));
-        *bytes_by_dtype.entry(dtype.to_string()).or_default() +=
-            elements * u128::from(dtype_size(dtype));
+        let bytes = elements
+            .checked_mul(u128::from(dtype_size(dtype)))
+            .ok_or_else(|| overflow(name))?;
+        let total = bytes_by_dtype.entry(dtype.to_string()).or_default();
+        *total = total.checked_add(bytes).ok_or_else(|| overflow(name))?;
     }
 
     let dominant = bytes_by_dtype
@@ -73,6 +67,26 @@ fn parse_header(header: &[u8]) -> Result<ModelInfo, FormatError> {
         quant: dominant,
         params: (param_count > 0).then(|| params_label(param_count)),
     })
+}
+
+/// Product of a tensor's shape dimensions; 0 when the shape is missing.
+///
+/// # Errors
+/// [`FormatError::Malformed`] when the product does not fit in 128 bits —
+/// no real tensor comes close, so the header is corrupt or hostile.
+fn element_count(tensor: &serde_json::Value) -> Result<u128, FormatError> {
+    let Some(shape) = tensor.get("shape").and_then(serde_json::Value::as_array) else {
+        return Ok(0);
+    };
+    shape
+        .iter()
+        .filter_map(serde_json::Value::as_u64)
+        .try_fold(1u128, |product, dim| product.checked_mul(u128::from(dim)))
+        .ok_or_else(|| FormatError::Malformed("tensor shape overflows".to_string()))
+}
+
+fn overflow(tensor: &str) -> FormatError {
+    FormatError::Malformed(format!("tensor {tensor} size overflows"))
 }
 
 /// Bytes per element for safetensors dtypes; unknown dtypes count as 1.
@@ -134,6 +148,33 @@ mod tests {
         let mut bytes = 4u64.to_le_bytes().to_vec();
         bytes.extend(b"GGUF");
         std::fs::write(&path, bytes).expect("write");
+
+        assert!(matches!(
+            inspect_safetensors(&path),
+            Err(FormatError::Malformed(_))
+        ));
+    }
+
+    #[test]
+    fn overflowing_shape_is_malformed_not_a_panic() {
+        let max = u64::MAX;
+        let (_dir, path) = write_safetensors(&format!(
+            r#"{{"t": {{"dtype": "F32", "shape": [{max}, {max}, {max}]}}}}"#
+        ));
+
+        assert!(matches!(
+            inspect_safetensors(&path),
+            Err(FormatError::Malformed(_))
+        ));
+    }
+
+    #[test]
+    fn overflowing_byte_total_is_malformed_not_a_panic() {
+        let max = u64::MAX;
+        let (_dir, path) = write_safetensors(&format!(
+            r#"{{"a": {{"dtype": "F64", "shape": [{max}, {max}]}},
+                "b": {{"dtype": "F64", "shape": [{max}, {max}]}}}}"#
+        ));
 
         assert!(matches!(
             inspect_safetensors(&path),

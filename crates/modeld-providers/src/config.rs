@@ -36,16 +36,16 @@ pub struct ScanConfig {
 ///
 /// # Errors
 /// Returns a description of an unreadable or unparseable config file — callers
-/// surface it as a warning, never a crash.
+/// treat its roots as unknown, never crash.
 pub fn load(path: &Path) -> Result<Config, String> {
     let contents = match std::fs::read_to_string(path) {
         Ok(contents) => contents,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(Config::default());
         }
-        Err(error) => return Err(format!("cannot read {}: {error}", path.display())),
+        Err(error) => return Err(format!("config unreadable: {error}")),
     };
-    toml::from_str(&contents).map_err(|error| format!("invalid {}: {error}", path.display()))
+    toml::from_str(&contents).map_err(|error| format!("invalid config: {error}"))
 }
 
 /// Expands configured roots (tilde + glob) into Manual provider roots.

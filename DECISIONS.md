@@ -163,3 +163,28 @@ were already clones. There were two causes.
    correctness. Live result: 8 of the 10 remaining candidates were adopted, and
    the 2 real duplicates left (a 10.1 MB Qwen vocab/merges pair) are true
    copies.
+
+## 2026-09-23 — PR review hardening
+
+- **Harvested digests never group duplicates.** Names are claims: two files
+  can claim the same hash, and an HF git-SHA-1 name never matches the SHA-256
+  of an identical copy. Size-colliding artifacts are hashed unless modeld
+  already verified them, and only verified digests form groups. This refines
+  "harvest identity from names, verify lazily": harvesting still saves work
+  for files with a unique size.
+- **An unreadable config makes the scan incomplete.** A broken
+  `config.toml` used to drop its roots silently, so the next sync pruned
+  every reference they owned. Detection now records the file as unreadable,
+  every scan of that detection counts it as skipped, and nothing is pruned
+  until the config parses again. An empty but complete detection still
+  syncs, so providers whose directories vanished stop showing in `ls`.
+- **Overlapping roots collect each file once.** Nested config roots, or a
+  config root covering a provider cache, used to list a file once per root.
+  The first root wins, keyed on the symlink-resolved path; hardlinks stay
+  separate.
+- **Import revalidates its source.** The stamp at which a file was hashed is
+  carried through import. If the file changed afterwards, it is not recorded
+  as sharing the blob and its reference is not recorded under the old digest.
+- **Header parsing cannot overflow.** Safetensors shape and byte totals use
+  checked arithmetic; an absurd shape makes the header malformed instead of
+  panicking.

@@ -7,7 +7,7 @@
 
 use crate::sync::{self, SyncReport};
 use modeld_core::consolidate::{Journal, Replacement, Report};
-use modeld_providers::ProviderRoot;
+use modeld_providers::Detection;
 use modeld_store::{Store, StoreError, StoreLock};
 use std::path::Path;
 use std::time::Duration;
@@ -35,7 +35,7 @@ pub struct PassReport {
     pub warnings: Vec<String>,
 }
 
-/// Runs one pass over `roots` against the store at `store_root`.
+/// Runs one pass over the detected roots against the store at `store_root`.
 ///
 /// `progress` is called with each path before it is hashed.
 ///
@@ -43,7 +43,7 @@ pub struct PassReport {
 /// Locking or opening the store or its journal failed; nothing was changed.
 pub fn run(
     store_root: &Path,
-    roots: &[ProviderRoot],
+    detection: &Detection,
     options: PassOptions,
     progress: impl FnMut(&Path, u64),
 ) -> Result<PassReport, StoreError> {
@@ -51,7 +51,7 @@ pub fn run(
     let store = Store::open(store_root.to_path_buf())?;
     let journal = Journal::open(store_root.join("journal.jsonl"))?;
 
-    let scanned = modeld_providers::scan::scan(roots, options.min_size);
+    let scanned = detection.scan(options.min_size);
     let sync = sync::run(&store, scanned, options.settle, progress);
     let planned = crate::consolidation::plan_against_store(&store, &sync.synced);
     let mut warnings = Vec::new();
@@ -70,6 +70,7 @@ pub fn run(
 mod tests {
     use super::*;
     use crate::sync::tests::Fixture;
+    use modeld_providers::scan::Skipped;
 
     const OPTIONS: PassOptions = PassOptions {
         settle: Duration::from_mins(5),
@@ -78,9 +79,13 @@ mod tests {
     };
 
     fn pass(fixture: &Fixture, options: PassOptions) -> PassReport {
+        let detection = Detection {
+            roots: vec![fixture.root.clone()],
+            unreadable: vec![],
+        };
         run(
             &fixture.dir.path().join(".modeld"),
-            std::slice::from_ref(&fixture.root),
+            &detection,
             options,
             |_, _| {},
         )
@@ -141,6 +146,32 @@ mod tests {
     }
 
     #[test]
+    fn unreadable_config_keeps_references_its_roots_owned() {
+        let fixture = Fixture::new();
+        fixture.settled_model("a.gguf", b"weights");
+        pass(&fixture, OPTIONS);
+        let broken = Detection {
+            roots: vec![],
+            unreadable: vec![Skipped {
+                path: fixture.dir.path().join(".modeld/config.toml"),
+                reason: "invalid TOML".to_string(),
+            }],
+        };
+
+        let report = run(
+            &fixture.dir.path().join(".modeld"),
+            &broken,
+            OPTIONS,
+            |_, _| {},
+        )
+        .expect("pass");
+
+        assert_eq!(report.sync.pruned, None);
+        let artifacts = fixture.store.artifacts().expect("artifacts");
+        assert_eq!(artifacts[0].references.len(), 1);
+    }
+
+    #[test]
     fn pass_waits_for_a_held_store_lock() {
         let fixture = Fixture::new();
         let store_root = fixture.dir.path().join(".modeld");
@@ -149,7 +180,7 @@ mod tests {
 
         let pass_root = store_root.clone();
         let pass = std::thread::spawn(move || {
-            let report = run(&pass_root, &[], OPTIONS, |_, _| {});
+            let report = run(&pass_root, &Detection::default(), OPTIONS, |_, _| {});
             done_tx.send(report.is_ok()).expect("send");
         });
 

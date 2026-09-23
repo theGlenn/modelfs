@@ -6,6 +6,7 @@
 
 use crate::{ProviderRoot, huggingface, lmstudio, ollama};
 use modeld_core::{Artifact, Digest, FileId, Format, ProviderKind, dedup};
+use std::collections::HashSet;
 use std::fs::Metadata;
 use std::io::Read;
 use std::os::unix::fs::MetadataExt;
@@ -38,7 +39,11 @@ impl ScanOutcome {
     }
 }
 
-/// Collects artifacts from every detected provider root.
+/// Collects artifacts from every detected provider root, each file once.
+///
+/// Roots may overlap (nested config roots, or a config root covering a
+/// provider cache); the first root to reach a file keeps it, so provider
+/// caches, detected before config roots, keep their richer labels.
 #[must_use]
 pub fn scan(roots: &[ProviderRoot], min_size: u64) -> ScanOutcome {
     let mut outcome = ScanOutcome::new();
@@ -51,7 +56,23 @@ pub fn scan(roots: &[ProviderRoot], min_size: u64) -> ScanOutcome {
             _ => {}
         }
     }
+    drop_repeated_files(&mut outcome.artifacts);
     outcome
+}
+
+/// Keeps the first artifact per file when overlapping roots reached it twice.
+///
+/// Keys are symlink-resolved paths, so differently spelled roots collapse,
+/// while hardlinks (distinct paths to one inode) stay separate artifacts.
+fn drop_repeated_files(artifacts: &mut Vec<Artifact>) {
+    let mut seen = HashSet::new();
+    artifacts.retain(|artifact| {
+        let key = artifact
+            .path
+            .canonicalize()
+            .unwrap_or_else(|_| artifact.path.clone());
+        seen.insert(key)
+    });
 }
 
 /// Hashes artifacts that need a digest for duplicate detection, in place.
@@ -238,6 +259,25 @@ mod tests {
         let path = dir.path().join("5f9e4d49");
         std::fs::write(&path, br#"{"version": 1, "truncation": null}"#).expect("write");
         assert_eq!(detect_format(&path), None);
+    }
+
+    #[test]
+    fn overlapping_roots_collect_each_file_once() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let parent = dir.path().join("models");
+        let child = parent.join("project");
+        std::fs::create_dir_all(&child).expect("mkdir");
+        std::fs::write(child.join("model.gguf"), b"weights").expect("write model");
+        let root = |path: &Path| ProviderRoot {
+            kind: ProviderKind::Manual,
+            root: path.to_path_buf(),
+            excluded: vec![],
+            label_prefix: None,
+        };
+
+        let outcome = scan(&[root(&parent), root(&child)], 1);
+
+        assert_eq!(outcome.artifacts.len(), 1);
     }
 
     #[test]

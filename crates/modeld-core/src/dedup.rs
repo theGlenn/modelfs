@@ -5,7 +5,7 @@
 //! 1. [`indices_needing_digest`] — which artifacts must be hashed at all. Only files
 //!    whose size collides with another file can possibly be duplicates, so everything
 //!    else skips hashing entirely.
-//! 2. [`duplicate_groups`] — once digests are present, group byte-identical files.
+//! 2. [`duplicate_groups`] — once digests are verified, group byte-identical files.
 //!
 //! Hardlinked paths (equal [`FileId`]) already share storage and count once toward
 //! reclaimable space.
@@ -35,8 +35,11 @@ pub struct Summary {
 
 /// Returns indices of artifacts that need hashing before duplicate detection.
 ///
-/// An artifact needs hashing when it has no digest yet and at least one other
-/// artifact has the same size (a digest can only ever match within equal sizes).
+/// An artifact needs hashing when modeld has not verified its digest yet and at
+/// least one other artifact has the same size (a digest can only ever match
+/// within equal sizes). Digests harvested from provider names are claims: two
+/// files can claim the same hash, and an HF git-SHA-1 name never matches the
+/// SHA-256 of an identical copy elsewhere.
 #[must_use]
 pub fn indices_needing_digest(artifacts: &[Artifact]) -> Vec<usize> {
     let mut by_size: HashMap<u64, usize> = HashMap::new();
@@ -46,12 +49,12 @@ pub fn indices_needing_digest(artifacts: &[Artifact]) -> Vec<usize> {
     artifacts
         .iter()
         .enumerate()
-        .filter(|(_, a)| a.digest.is_none() && by_size[&a.size] > 1)
+        .filter(|(_, a)| !a.digest_verified && by_size[&a.size] > 1)
         .map(|(i, _)| i)
         .collect()
 }
 
-/// Groups artifacts with equal digests, ignoring artifacts without one.
+/// Groups artifacts with equal verified digests; unverified claims never group.
 ///
 /// Groups are returned largest-reclaimable first. Members hardlinked to the same
 /// inode count as one stored copy.
@@ -59,7 +62,11 @@ pub fn indices_needing_digest(artifacts: &[Artifact]) -> Vec<usize> {
 pub fn duplicate_groups(artifacts: &[Artifact]) -> Vec<DuplicateGroup> {
     let mut by_digest: HashMap<&Digest, Vec<usize>> = HashMap::new();
     for (index, artifact) in artifacts.iter().enumerate() {
-        if let Some(digest) = &artifact.digest {
+        if let Some(digest) = artifact
+            .digest
+            .as_ref()
+            .filter(|_| artifact.digest_verified)
+        {
             by_digest.entry(digest).or_default().push(index);
         }
     }
@@ -118,6 +125,7 @@ mod tests {
     use crate::digest::Algorithm;
     use std::path::PathBuf;
 
+    /// An artifact whose digest (when given) modeld verified by hashing.
     fn artifact(path: &str, size: u64, digest_byte: Option<u8>, inode: Option<u64>) -> Artifact {
         Artifact {
             path: PathBuf::from(path),
@@ -127,21 +135,36 @@ mod tests {
             digest: digest_byte.map(|b| {
                 Digest::new(Algorithm::Sha256, vec![b; 32]).expect("32 bytes is valid sha256")
             }),
-            digest_verified: false,
+            digest_verified: digest_byte.is_some(),
             label: None,
             file_id: inode.map(|inode| FileId { device: 1, inode }),
             link_count: Some(1),
         }
     }
 
+    /// An artifact carrying a digest harvested from its name, never hashed.
+    fn claimed(path: &str, size: u64, digest_byte: u8) -> Artifact {
+        Artifact {
+            digest_verified: false,
+            ..artifact(path, size, Some(digest_byte), None)
+        }
+    }
+
     #[test]
-    fn artifacts_without_digest_and_colliding_size_need_hashing() {
+    fn size_colliding_artifacts_need_hashing_unless_verified() {
         let artifacts = [
-            artifact("/a", 100, None, None),    // size collides with /b -> hash
-            artifact("/b", 100, Some(1), None), // has digest -> skip
-            artifact("/c", 999, None, None),    // unique size -> skip
+            artifact("/a", 100, None, None), // no digest, size collides -> hash
+            claimed("/b", 100, 1),           // name claim only -> hash
+            artifact("/c", 100, Some(1), None), // verified -> skip
+            artifact("/d", 999, None, None), // unique size -> skip
         ];
-        assert_eq!(indices_needing_digest(&artifacts), vec![0]);
+        assert_eq!(indices_needing_digest(&artifacts), vec![0, 1]);
+    }
+
+    #[test]
+    fn unverified_claims_never_form_groups() {
+        let artifacts = [claimed("/a", 100, 1), claimed("/b", 100, 1)];
+        assert!(duplicate_groups(&artifacts).is_empty());
     }
 
     #[test]

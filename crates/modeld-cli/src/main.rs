@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 use modeld_core::Digest;
 use modeld_providers::scan::ScanOutcome;
-use modeld_store::{Store, StoreLock};
+use modeld_store::{FileStamp, Store, StoreLock};
 use std::collections::HashSet;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -88,8 +88,12 @@ fn main() {
 
 fn doctor() {
     let detection = modeld_providers::detect_all();
-    for warning in &detection.warnings {
-        eprintln!("warning: {warning}");
+    for unreadable in &detection.unreadable {
+        eprintln!(
+            "warning: {} ({}); its scan roots are unknown",
+            unreadable.path.display(),
+            unreadable.reason
+        );
     }
     if detection.roots.is_empty() {
         println!("No known model providers detected.");
@@ -118,9 +122,13 @@ fn scan(min_size: u64) {
 
 fn sync(min_size: u64) {
     let _lock = lock_store();
-    let Some(outcome) = scan_providers(min_size) else {
-        return;
-    };
+    let detection = modeld_providers::detect_all();
+    if detection.roots.is_empty() {
+        // Still sync: an empty complete scan is what prunes references to
+        // providers whose directories disappeared.
+        println!("No known model providers detected.");
+    }
+    let outcome = detection.scan(min_size);
     let store = open_store();
     let report = sync::run(&store, outcome, Duration::ZERO, print_hashing);
     for skipped in &report.skipped {
@@ -180,6 +188,9 @@ fn dedupe(dry_run: bool, min_size: u64) {
     let Some(outcome) = scan_and_hash(min_size) else {
         return;
     };
+    for skipped in &outcome.skipped {
+        eprintln!("skip {} ({})", skipped.path.display(), skipped.reason);
+    }
     let groups = modeld_core::dedup::duplicate_groups(&outcome.artifacts);
     let store = open_store();
     let mut replacements = Vec::new();
@@ -190,21 +201,18 @@ fn dedupe(dry_run: bool, min_size: u64) {
         }
         let source = &outcome.artifacts[group.members[0]];
         // Verify the import source by hashing before the store adopts its bytes.
-        match Digest::sha256_file(&source.path) {
-            Ok(actual) if actual == group.digest => {}
-            Ok(_) => {
-                eprintln!("skip group {} (source drifted)", group.digest);
-                continue;
-            }
-            Err(error) => {
-                eprintln!("skip group {} ({error})", group.digest);
-                continue;
-            }
-        }
+        let Some(verified) = verify_source(&source.path, &group.digest) else {
+            continue;
+        };
         let import = if dry_run {
             None
         } else {
-            match store.import_blob(&source.path, &group.digest, source.format.as_ref()) {
+            match store.import_blob(
+                &source.path,
+                verified,
+                &group.digest,
+                source.format.as_ref(),
+            ) {
                 Ok(outcome) => Some(outcome),
                 Err(error) => {
                     eprintln!("skip group {} ({error})", group.digest);
@@ -260,6 +268,30 @@ fn dedupe(dry_run: bool, min_size: u64) {
         eprintln!("warning: {warning}");
     });
     print!("{}", report::render_consolidation(&result, "Freed"));
+}
+
+/// Hashes a group's import source; returns the stamp it verified at.
+///
+/// Reports and returns `None` when the source cannot be hashed, no longer
+/// matches the group digest, or changed while being hashed.
+fn verify_source(path: &Path, expected: &Digest) -> Option<FileStamp> {
+    let verified = FileStamp::of(path).ok()?;
+    match Digest::sha256_file(path) {
+        Ok(actual) if actual == *expected => {}
+        Ok(_) => {
+            eprintln!("skip group {expected} (source drifted)");
+            return None;
+        }
+        Err(error) => {
+            eprintln!("skip group {expected} ({error})");
+            return None;
+        }
+    }
+    if !FileStamp::of(path).is_ok_and(|now| now == verified) {
+        eprintln!("skip group {expected} (source changed while hashing)");
+        return None;
+    }
+    Some(verified)
 }
 
 fn restore() {
@@ -357,16 +389,14 @@ fn print_hashing(path: &Path, size: u64) {
     eprintln!("hashing {} ({})", path.display(), report::human_bytes(size));
 }
 
+/// Scans every detected root; unreadable root sources appear as skipped.
 fn scan_providers(min_size: u64) -> Option<ScanOutcome> {
     let detection = modeld_providers::detect_all();
-    for warning in &detection.warnings {
-        eprintln!("warning: {warning}");
-    }
-    if detection.roots.is_empty() {
+    if detection.roots.is_empty() && detection.unreadable.is_empty() {
         println!("No known model providers detected — nothing to do.");
         return None;
     }
-    Some(modeld_providers::scan::scan(&detection.roots, min_size))
+    Some(detection.scan(min_size))
 }
 
 fn scan_and_hash(min_size: u64) -> Option<ScanOutcome> {

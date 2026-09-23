@@ -15,7 +15,7 @@ use crate::events::EventFilter;
 use crate::reconcile::{self, PassOptions, PassReport};
 use crate::report::human_bytes;
 use crate::schedule::{Schedule, Timings};
-use modeld_providers::ProviderRoot;
+use modeld_providers::{Detection, ProviderRoot};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -61,10 +61,10 @@ pub fn run(store_root: &Path, options: PassOptions) -> Result<(), Box<dyn std::e
 
     while !stop.load(Ordering::Relaxed) {
         if schedule.is_due(Instant::now()) {
-            let roots = detect_roots();
-            watches.follow(&roots);
-            filter = EventFilter::new(&roots, store_root);
-            let retry_in = run_pass(store_root, &roots, options);
+            let detection = modeld_providers::detect_all();
+            watches.follow(&detection.roots);
+            filter = EventFilter::new(&detection.roots, store_root);
+            let retry_in = run_pass(store_root, &detection, options);
             schedule.pass_finished(Instant::now(), retry_in);
             continue;
         }
@@ -94,16 +94,8 @@ fn stop_flag() -> std::io::Result<Arc<AtomicBool>> {
     Ok(stop)
 }
 
-fn detect_roots() -> Vec<ProviderRoot> {
-    let detection = modeld_providers::detect_all();
-    for warning in &detection.warnings {
-        log(format!("warning: {warning}"));
-    }
-    detection.roots
-}
-
 /// Runs one pass and logs it; returns how soon the next pass is wanted.
-fn run_pass(store_root: &Path, roots: &[ProviderRoot], options: PassOptions) -> Option<Duration> {
+fn run_pass(store_root: &Path, detection: &Detection, options: PassOptions) -> Option<Duration> {
     let hashing = |path: &Path, size: u64| {
         log(format!(
             "hashing {} ({})",
@@ -111,7 +103,7 @@ fn run_pass(store_root: &Path, roots: &[ProviderRoot], options: PassOptions) -> 
             human_bytes(size)
         ));
     };
-    match reconcile::run(store_root, roots, options, hashing) {
+    match reconcile::run(store_root, detection, options, hashing) {
         Ok(report) => {
             log_details(&report);
             log(summarize(&report));

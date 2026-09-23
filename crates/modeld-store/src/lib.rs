@@ -212,8 +212,12 @@ impl Store {
 
     /// Imports `source` as the canonical blob for `digest` (caller-verified).
     ///
-    /// Cloning is copy-on-write: zero marginal disk cost, and later mutation of
-    /// `source` cannot corrupt the stored blob.
+    /// `verified` is the stamp `source` had when the caller hashed it. Cloning
+    /// is copy-on-write: zero marginal disk cost, and later mutation of
+    /// `source` cannot corrupt the stored blob. The blob itself is re-verified
+    /// after cloning; `source` is recorded as sharing it only if its stamp
+    /// still equals `verified`, so a file rewritten mid-import is never
+    /// mistaken for a clone of the old bytes.
     ///
     /// # Errors
     /// Registry failure, or I/O failure other than the clone being impossible
@@ -221,16 +225,17 @@ impl Store {
     pub fn import_blob(
         &self,
         source: &Path,
+        verified: FileStamp,
         digest: &Digest,
         format: Option<&Format>,
     ) -> Result<ImportOutcome, StoreError> {
         let blob = self.blob_path(digest);
         let outcome = match self.check_blob(&blob, digest)? {
             BlobCheck::Verified => ImportOutcome::AlreadyPresent,
-            BlobCheck::Missing => self.clone_verified(source, &blob, digest)?,
+            BlobCheck::Missing => self.clone_verified(source, verified, &blob, digest)?,
             BlobCheck::Corrupt => {
                 std::fs::remove_file(&blob)?;
-                self.clone_verified(source, &blob, digest)?
+                self.clone_verified(source, verified, &blob, digest)?
             }
         };
         if outcome == ImportOutcome::NotCloneable {
@@ -287,6 +292,7 @@ impl Store {
     fn clone_verified(
         &self,
         source: &Path,
+        verified: FileStamp,
         blob: &Path,
         expected: &Digest,
     ) -> Result<ImportOutcome, StoreError> {
@@ -297,7 +303,6 @@ impl Store {
             }
             Err(error) => return Err(error.into()),
         }
-        let source_stamp = FileStamp::of(source)?;
         let blob_stamp = FileStamp::of(blob)?;
         let actual = Digest::sha256_file(blob)?;
         if actual != *expected {
@@ -309,7 +314,9 @@ impl Store {
             });
         }
         self.remember_blob_if_unchanged(blob, blob_stamp, expected)?;
-        self.record_shared_stamp(expected, source, source_stamp)?;
+        if FileStamp::of(source).is_ok_and(|now| now == verified) {
+            self.record_shared_stamp(expected, source, verified)?;
+        }
         Ok(ImportOutcome::Imported)
     }
 
@@ -829,6 +836,10 @@ mod tests {
         (dir, store)
     }
 
+    fn stamp_of(path: &Path) -> FileStamp {
+        FileStamp::of(path).expect("stat source")
+    }
+
     fn digest_of(content: &[u8], dir: &Path) -> (PathBuf, Digest) {
         let path = dir.join("source.gguf");
         std::fs::write(&path, content).expect("write source");
@@ -842,10 +853,10 @@ mod tests {
         let (source, digest) = digest_of(b"weights", dir.path());
 
         let first = store
-            .import_blob(&source, &digest, Some(&Format::Gguf))
+            .import_blob(&source, stamp_of(&source), &digest, Some(&Format::Gguf))
             .expect("import");
         let second = store
-            .import_blob(&source, &digest, Some(&Format::Gguf))
+            .import_blob(&source, stamp_of(&source), &digest, Some(&Format::Gguf))
             .expect("re-import");
 
         assert_eq!(first, ImportOutcome::Imported);
@@ -861,7 +872,7 @@ mod tests {
         let (dir, store) = store();
         let (source, digest) = digest_of(b"weights", dir.path());
         store
-            .import_blob(&source, &digest, Some(&Format::Gguf))
+            .import_blob(&source, stamp_of(&source), &digest, Some(&Format::Gguf))
             .expect("import");
         store
             .record_reference(
@@ -894,7 +905,9 @@ mod tests {
     fn prune_drops_references_not_seen_this_sync() {
         let (dir, store) = store();
         let (source, digest) = digest_of(b"weights", dir.path());
-        store.import_blob(&source, &digest, None).expect("import");
+        store
+            .import_blob(&source, stamp_of(&source), &digest, None)
+            .expect("import");
         store
             .record_reference(&digest, &source, ProviderKind::LmStudio, None, 100)
             .expect("ref");
@@ -945,7 +958,9 @@ mod tests {
     fn find_matches_labels_case_insensitively() {
         let (dir, store) = store();
         let (source, digest) = digest_of(b"weights", dir.path());
-        store.import_blob(&source, &digest, None).expect("import");
+        store
+            .import_blob(&source, stamp_of(&source), &digest, None)
+            .expect("import");
         store
             .record_reference(
                 &digest,
@@ -964,7 +979,9 @@ mod tests {
     fn imported_source_is_remembered_only_while_unchanged() {
         let (dir, store) = store();
         let (source, digest) = digest_of(b"weights", dir.path());
-        store.import_blob(&source, &digest, None).expect("import");
+        store
+            .import_blob(&source, stamp_of(&source), &digest, None)
+            .expect("import");
 
         assert!(store.path_is_shared(&digest, &source).expect("shared"));
         std::fs::write(&source, b"changed").expect("mutate source");
@@ -976,7 +993,7 @@ mod tests {
         let (dir, store) = store();
         let (source, digest) = digest_of(b"weights", dir.path());
         store
-            .import_blob(&source, &digest, Some(&Format::Gguf))
+            .import_blob(&source, stamp_of(&source), &digest, Some(&Format::Gguf))
             .expect("import");
         assert!(store.blob_path(&digest).exists());
 
@@ -993,7 +1010,9 @@ mod tests {
     fn live_shared_path_blocks_until_the_clone_changes() {
         let (dir, store) = store();
         let (source, digest) = digest_of(b"weights", dir.path());
-        store.import_blob(&source, &digest, None).expect("import");
+        store
+            .import_blob(&source, stamp_of(&source), &digest, None)
+            .expect("import");
 
         assert!(store.has_live_shared_path(&digest).expect("live"));
         std::fs::write(&source, b"changed").expect("mutate source");
@@ -1005,7 +1024,7 @@ mod tests {
         let (dir, store) = store();
         let (source, digest) = digest_of(b"weights", dir.path());
         store
-            .import_blob(&source, &digest, Some(&Format::Gguf))
+            .import_blob(&source, stamp_of(&source), &digest, Some(&Format::Gguf))
             .expect("import");
 
         assert!(store.semantics_pending(&digest).expect("pending"));
@@ -1062,7 +1081,9 @@ mod tests {
     fn recorded_clone_survives_a_device_renumbering() {
         let (dir, store) = store();
         let (source, digest) = digest_of(b"weights", dir.path());
-        store.import_blob(&source, &digest, None).expect("import");
+        store
+            .import_blob(&source, stamp_of(&source), &digest, None)
+            .expect("import");
 
         renumber_devices(&store);
 
@@ -1082,13 +1103,30 @@ mod tests {
     }
 
     #[test]
+    fn source_changed_since_verification_is_not_recorded_as_shared() {
+        let (dir, store) = store();
+        let (source, digest) = digest_of(b"weights", dir.path());
+        let verified = FileStamp {
+            mtime_nanos: stamp_of(&source).mtime_nanos.wrapping_add(1),
+            ..stamp_of(&source)
+        };
+
+        let outcome = store
+            .import_blob(&source, verified, &digest, None)
+            .expect("import");
+
+        assert_eq!(outcome, ImportOutcome::Imported);
+        assert!(!store.path_is_shared(&digest, &source).expect("shared"));
+    }
+
+    #[test]
     fn verified_blob_stays_verified_across_store_reopen() {
         let dir = tempfile::tempdir().expect("create temp dir");
         let (source, digest) = digest_of(b"weights", dir.path());
         let root = dir.path().join(".modeld");
         Store::open(root.clone())
             .expect("open store")
-            .import_blob(&source, &digest, None)
+            .import_blob(&source, stamp_of(&source), &digest, None)
             .expect("import");
 
         let reopened = Store::open(root).expect("reopen store");
@@ -1107,12 +1145,14 @@ mod tests {
         let (source, digest) = digest_of(b"weights", dir.path());
         let root = dir.path().join(".modeld");
         let store = Store::open(root.clone()).expect("open store");
-        store.import_blob(&source, &digest, None).expect("import");
+        store
+            .import_blob(&source, stamp_of(&source), &digest, None)
+            .expect("import");
         std::fs::write(store.blob_path(&digest), b"tampered").expect("tamper blob");
 
         let outcome = Store::open(root)
             .expect("reopen store")
-            .import_blob(&source, &digest, None)
+            .import_blob(&source, stamp_of(&source), &digest, None)
             .expect("repair");
 
         assert_eq!(outcome, ImportOutcome::Imported);
@@ -1129,7 +1169,9 @@ mod tests {
         let blob = store.blob_path(&digest);
         std::fs::write(&blob, b"corrupt").expect("seed corrupt blob");
 
-        let outcome = store.import_blob(&source, &digest, None).expect("repair");
+        let outcome = store
+            .import_blob(&source, stamp_of(&source), &digest, None)
+            .expect("repair");
 
         assert_eq!(outcome, ImportOutcome::Imported);
         assert_eq!(std::fs::read(blob).expect("read repaired"), b"weights");

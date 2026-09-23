@@ -124,20 +124,25 @@ fn sync_artifact(
     if let Some(settles_in) = unsettled(&artifact.path, settle, now) {
         return Step::Deferred(settles_in);
     }
-    if !ensure_verified_digest(store, artifact, progress) {
+    let Some(verified) = ensure_verified_digest(store, artifact, progress) else {
         return Step::Skipped("file changed or could not be hashed".to_string());
-    }
+    };
     let Some(digest) = artifact.digest.clone() else {
         return Step::Ignored;
     };
     if digest.algorithm() != Algorithm::Sha256 {
         return Step::Ignored;
     }
-    let imported = match store.import_blob(&artifact.path, &digest, artifact.format.as_ref()) {
+    let format = artifact.format.as_ref();
+    let imported = match store.import_blob(&artifact.path, verified, &digest, format) {
         Ok(ImportOutcome::NotCloneable) => return Step::Skipped("different volume".to_string()),
         Ok(imported) => imported,
         Err(error) => return Step::Skipped(error.to_string()),
     };
+    // A rewrite after hashing must not be recorded under the old digest.
+    if !FileStamp::of(&artifact.path).is_ok_and(|now| now == verified) {
+        return Step::Skipped("file changed while importing".to_string());
+    }
     let recorded = store.record_reference(
         &digest,
         &artifact.path,
@@ -210,39 +215,36 @@ fn record_semantics_if_pending(store: &Store, artifact: &Artifact, warnings: &mu
 /// Verifies (or computes) the artifact's digest, consulting the store's cache.
 ///
 /// Harvested digests are claims; sync trusts only hashes modeld computed itself.
-/// Returns false when the file cannot be hashed or changed while hashing.
+/// Returns the stamp the digest was verified at, or `None` when the file cannot
+/// be hashed or changed while hashing.
 fn ensure_verified_digest(
     store: &Store,
     artifact: &mut Artifact,
     progress: &mut impl FnMut(&Path, u64),
-) -> bool {
+) -> Option<FileStamp> {
+    let before = FileStamp::of(&artifact.path).ok()?;
     if artifact.digest_verified {
-        return true;
+        return Some(before);
     }
-    let Ok(before) = FileStamp::of(&artifact.path) else {
-        return false;
-    };
     if before.size != artifact.size {
-        return false;
+        return None;
     }
     if let Ok(Some(cached)) = store.cached_digest(&artifact.path, before)
         && FileStamp::of(&artifact.path).is_ok_and(|after| after == before)
     {
         artifact.digest = Some(cached);
         artifact.digest_verified = true;
-        return true;
+        return Some(before);
     }
     progress(&artifact.path, artifact.size);
-    let Ok(actual) = Digest::sha256_file(&artifact.path) else {
-        return false;
-    };
+    let actual = Digest::sha256_file(&artifact.path).ok()?;
     if !FileStamp::of(&artifact.path).is_ok_and(|after| after == before) {
-        return false;
+        return None;
     }
     let _ = store.remember_digest(&artifact.path, before, &actual);
     artifact.digest = Some(actual);
     artifact.digest_verified = true;
-    true
+    Some(before)
 }
 
 #[cfg(test)]
@@ -340,6 +342,23 @@ pub(crate) mod tests {
 
         assert_eq!(report.imported, 1);
         assert!(report.deferred.is_empty());
+    }
+
+    #[test]
+    fn empty_complete_scan_prunes_references_to_vanished_files() {
+        let fixture = Fixture::new();
+        let model = fixture.settled_model("a.gguf", b"weights");
+        fixture.sync(Duration::ZERO);
+        std::fs::remove_file(&model).expect("delete model");
+
+        let report = run(
+            &fixture.store,
+            ScanOutcome::new(),
+            Duration::ZERO,
+            |_, _| {},
+        );
+
+        assert_eq!(report.pruned, Some(1));
     }
 
     #[test]
