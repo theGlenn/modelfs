@@ -86,7 +86,11 @@ enum DaemonAction {
 }
 
 fn main() {
-    match Cli::parse().command {
+    let command = Cli::parse().command;
+    if !matches!(command, Command::Daemon { action: None, .. }) {
+        end_quietly_on_closed_pipe();
+    }
+    match command {
         Command::Doctor => doctor(),
         Command::Scan { min_size } => scan(min_size),
         Command::Sync { min_size } => sync(min_size),
@@ -106,6 +110,18 @@ fn main() {
             Some(DaemonAction::Status) => agent_status(),
         },
     }
+}
+
+/// Restores the default `SIGPIPE` action, which Rust ignores at startup.
+///
+/// Ignored, printing into a pipe whose reader quit (`modeld ls | head -1`)
+/// makes `println!` panic. Restored, the command ends silently, like other
+/// Unix tools. Commands only print between complete steps, never inside a
+/// swap. The daemon keeps ignoring the signal: see `daemon::log`.
+fn end_quietly_on_closed_pipe() {
+    // SAFETY: runs on the main thread before any other thread exists, and
+    // SIG_DFL is a valid action for SIGPIPE.
+    unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
 }
 
 fn doctor() {

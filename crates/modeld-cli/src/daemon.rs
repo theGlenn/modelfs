@@ -18,6 +18,7 @@ use crate::report::human_bytes;
 use crate::schedule::{Schedule, Timings};
 use modeld_providers::{Detection, ProviderRoot};
 use std::collections::BTreeSet;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -285,8 +286,16 @@ fn claim_instance(store_root: &Path, stop: &AtomicBool) -> std::io::Result<Optio
     Ok(None)
 }
 
+/// Writes one timestamped line to stdout, the log file under launchd.
+///
+/// A write error (say, a foreground daemon piped into a reader that quit) is
+/// dropped: losing a log line must never stop a pass.
 fn log(message: impl std::fmt::Display) {
-    println!("{} {message}", utc_timestamp(SystemTime::now()));
+    let _ = writeln!(
+        std::io::stdout(),
+        "{} {message}",
+        utc_timestamp(SystemTime::now())
+    );
 }
 
 /// The watcher plus the set of scan roots it currently follows.
