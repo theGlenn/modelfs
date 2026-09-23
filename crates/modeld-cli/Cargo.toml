@@ -17,6 +17,7 @@ modeld-formats.workspace = true
 modeld-providers.workspace = true
 modeld-store.workspace = true
 clap.workspace = true
+libc.workspace = true
 notify.workspace = true
 signal-hook.workspace = true
 

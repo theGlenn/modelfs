@@ -188,3 +188,32 @@ were already clones. There were two causes.
 - **Header parsing cannot overflow.** Safetensors shape and byte totals use
   checked arithmetic; an absurd shape makes the header malformed instead of
   panicking.
+
+## 2026-09-23 — Start at login: a launchd agent running an installed copy
+
+`modeld daemon install` writes a per-user launchd agent
+(`~/Library/LaunchAgents/dev.modeld.daemon.plist`, label `dev.modeld.daemon`)
+and loads it with `launchctl bootstrap gui/<uid>`. It stops any running agent
+first, so re-running `install` is also how an update is applied. Choices:
+
+- **Stable binary path.** The running binary is copied to
+  `~/.modeld/bin/modeld`, and the agent runs that copy. Build directories get
+  deleted or rebuilt (Conductor workspaces are disposable). The copy goes
+  through a temp file and a rename, so replacing a binary that is running is
+  safe.
+- **Explicit environment.** launchd does not inherit the shell's environment,
+  so `HOME`, plus `HF_HOME` / `HF_HUB_CACHE` / `OLLAMA_MODELS` when they are
+  set at install time, are written into the plist. Without them the agent
+  would watch different folders than the CLI.
+- **Restart only on failure.** `KeepAlive.SuccessfulExit = false`: a crash
+  or watcher failure restarts the agent, but a clean SIGTERM stop does not.
+  `ProcessType = Background` gives it throttled CPU and I/O, so hashing a
+  new download never competes with foreground work. `ExitTimeOut = 120 s`
+  lets a pass that is mid-hash finish and journal before launchd resorts to
+  SIGKILL.
+- **One daemon per store.** A daemon holds `~/.modeld/daemon.lock` for its
+  whole lifetime. A second one, such as a terminal run while the agent is up,
+  logs once and waits to take over instead of duplicating passes. Exiting
+  instead would make launchd restart it in a loop.
+- `uninstall` stops the agent and removes the plist; the installed binary and
+  `~/.modeld/daemon.log` stay. The log is not rotated yet.
