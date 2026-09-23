@@ -28,9 +28,12 @@ const ASSET_FILENAMES: [&str; 10] = [
 ];
 
 /// Builds the registry semantics for one artifact from its canonical blob.
-pub fn analyze(artifact: &Artifact, blob: &Path) -> Semantics {
+///
+/// An unreadable header is not fatal: the artifact keeps its kind, `warn`
+/// hears why the facts are missing.
+pub fn analyze(artifact: &Artifact, blob: &Path, warn: impl FnOnce(String)) -> Semantics {
     let kind = if is_asset(artifact) { "asset" } else { "model" };
-    let info = inspect(artifact, blob).unwrap_or_default();
+    let info = inspect(artifact, blob, warn).unwrap_or_default();
     Semantics {
         kind: kind.to_string(),
         name: info.name,
@@ -40,7 +43,11 @@ pub fn analyze(artifact: &Artifact, blob: &Path) -> Semantics {
     }
 }
 
-fn inspect(artifact: &Artifact, blob: &Path) -> Option<modeld_formats::ModelInfo> {
+fn inspect(
+    artifact: &Artifact,
+    blob: &Path,
+    warn: impl FnOnce(String),
+) -> Option<modeld_formats::ModelInfo> {
     let parsed = match artifact.format {
         Some(Format::Gguf) => modeld_formats::inspect_gguf(blob),
         Some(Format::Safetensors) => modeld_formats::inspect_safetensors(blob),
@@ -49,10 +56,10 @@ fn inspect(artifact: &Artifact, blob: &Path) -> Option<modeld_formats::ModelInfo
     match parsed {
         Ok(info) => Some(info),
         Err(error) => {
-            eprintln!(
-                "warning: could not read header of {} ({error})",
+            warn(format!(
+                "could not read header of {} ({error})",
                 artifact.path.display()
-            );
+            ));
             None
         }
     }

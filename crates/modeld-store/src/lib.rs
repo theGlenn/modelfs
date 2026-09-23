@@ -5,15 +5,15 @@
 //! store can anchor bytes even after every provider deletes its copy. The `SQLite`
 //! registry records artifacts, which provider paths reference them, and a digest
 //! cache keyed on full file identity and timestamps so re-syncs never re-hash
-//! settled files.
+//! settled files — provider files and canonical blobs alike.
 //!
 //! Callers must only import digests they have verified by hashing the source file —
-//! the store trusts its inputs and verifies nothing itself (single hashing site
-//! lives with the caller, which also owns progress reporting).
+//! the store trusts its inputs and verifies only its own blobs (single hashing
+//! site for provider files lives with the caller, which owns progress reporting).
+//! Mutating callers serialize through [`StoreLock`].
 
 use modeld_core::{Digest, Format, ProviderKind};
 use rusqlite::{Connection, params};
-use std::cell::RefCell;
 use std::collections::HashSet;
 use std::fs::Metadata;
 use std::os::unix::fs::MetadataExt;
@@ -46,6 +46,14 @@ pub enum ImportOutcome {
     AlreadyPresent,
     /// Source cannot be cloned into the store volume (cross-volume or non-APFS).
     NotCloneable,
+}
+
+/// What [`Store::import_blob`] found at a blob's path before importing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BlobCheck {
+    Missing,
+    Verified,
+    Corrupt,
 }
 
 /// One provider path referencing a stored artifact.
@@ -90,9 +98,13 @@ pub struct Totals {
 }
 
 /// Filesystem identity used to validate cached digests and known APFS clones.
+///
+/// Stamps are always compared for the same path, so the inode plus
+/// nanosecond mtime and ctime identify a file. The device number is left out
+/// on purpose: macOS reassigns APFS `st_dev` values at boot, so matching on it
+/// would invalidate every cache and every recorded clone after a restart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FileStamp {
-    pub device: u64,
     pub inode: u64,
     pub size: u64,
     pub mtime_secs: u64,
@@ -106,7 +118,6 @@ impl FileStamp {
     #[must_use]
     pub fn from_metadata(metadata: &Metadata) -> Self {
         Self {
-            device: metadata.dev(),
             inode: metadata.ino(),
             size: metadata.len(),
             mtime_secs: u64::try_from(metadata.mtime()).unwrap_or(0),
@@ -126,13 +137,14 @@ impl FileStamp {
 }
 
 /// Handle to the store directory and its registry.
+///
+/// Canonical blobs are hashed when created and whenever their stamp changes;
+/// a blob whose stamp matches its last verification is trusted without
+/// re-reading it (the same rule the digest cache applies to provider files).
 #[derive(Debug)]
 pub struct Store {
     root: PathBuf,
     conn: Connection,
-    /// Avoid re-hashing the same multi-gigabyte canonical once per reference in
-    /// a single command while still validating it at least once per store open.
-    verified_blobs: RefCell<HashSet<Digest>>,
 }
 
 impl Store {
@@ -162,7 +174,7 @@ impl Store {
              CREATE INDEX IF NOT EXISTS refs_by_digest ON refs(digest);
              CREATE TABLE IF NOT EXISTS digest_cache (
                  path        TEXT PRIMARY KEY,
-                 device      INTEGER NOT NULL,
+                 device      INTEGER NOT NULL, -- legacy, always 0: see FileStamp
                  inode       INTEGER NOT NULL,
                  size        INTEGER NOT NULL,
                  mtime_secs  INTEGER NOT NULL,
@@ -174,7 +186,7 @@ impl Store {
              CREATE TABLE IF NOT EXISTS shared_paths (
                  path        TEXT PRIMARY KEY,
                  digest      TEXT NOT NULL,
-                 device      INTEGER NOT NULL,
+                 device      INTEGER NOT NULL, -- legacy, always 0: see FileStamp
                  inode       INTEGER NOT NULL,
                  size        INTEGER NOT NULL,
                  mtime_secs  INTEGER NOT NULL,
@@ -185,11 +197,7 @@ impl Store {
         )?;
         migrate_stamp_columns(&conn, "digest_cache")?;
         migrate_semantics_columns(&conn)?;
-        Ok(Self {
-            root,
-            conn,
-            verified_blobs: RefCell::new(HashSet::new()),
-        })
+        Ok(Self { root, conn })
     }
 
     /// Path a blob for `digest` lives at (whether or not it exists yet).
@@ -217,23 +225,16 @@ impl Store {
         format: Option<&Format>,
     ) -> Result<ImportOutcome, StoreError> {
         let blob = self.blob_path(digest);
-        let already_verified = self.verified_blobs.borrow().contains(digest);
-        let mut outcome = ImportOutcome::AlreadyPresent;
-
-        if !already_verified {
-            if blob.exists() {
-                let actual = Digest::sha256_file(&blob)?;
-                if actual != *digest {
-                    std::fs::remove_file(&blob)?;
-                    outcome = self.clone_verified(source, &blob, digest)?;
-                }
-            } else {
-                outcome = self.clone_verified(source, &blob, digest)?;
+        let outcome = match self.check_blob(&blob, digest)? {
+            BlobCheck::Verified => ImportOutcome::AlreadyPresent,
+            BlobCheck::Missing => self.clone_verified(source, &blob, digest)?,
+            BlobCheck::Corrupt => {
+                std::fs::remove_file(&blob)?;
+                self.clone_verified(source, &blob, digest)?
             }
-            if outcome == ImportOutcome::NotCloneable {
-                return Ok(outcome);
-            }
-            self.verified_blobs.borrow_mut().insert(digest.clone());
+        };
+        if outcome == ImportOutcome::NotCloneable {
+            return Ok(outcome);
         }
 
         let verified_size = std::fs::metadata(&blob)?.len();
@@ -251,6 +252,38 @@ impl Store {
         Ok(outcome)
     }
 
+    /// Classifies the blob at `blob`, hashing it only when its stamp is unknown.
+    fn check_blob(&self, blob: &Path, expected: &Digest) -> Result<BlobCheck, StoreError> {
+        let stamp = match FileStamp::of(blob) {
+            Ok(stamp) => stamp,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(BlobCheck::Missing);
+            }
+            Err(error) => return Err(error.into()),
+        };
+        if self.cached_digest(blob, stamp)?.as_ref() == Some(expected) {
+            return Ok(BlobCheck::Verified);
+        }
+        if Digest::sha256_file(blob)? != *expected {
+            return Ok(BlobCheck::Corrupt);
+        }
+        self.remember_blob_if_unchanged(blob, stamp, expected)?;
+        Ok(BlobCheck::Verified)
+    }
+
+    /// Caches a blob verification, unless the blob changed while being hashed.
+    fn remember_blob_if_unchanged(
+        &self,
+        blob: &Path,
+        hashed: FileStamp,
+        digest: &Digest,
+    ) -> Result<(), StoreError> {
+        if FileStamp::of(blob)? == hashed {
+            self.remember_digest(blob, hashed, digest)?;
+        }
+        Ok(())
+    }
+
     fn clone_verified(
         &self,
         source: &Path,
@@ -265,6 +298,7 @@ impl Store {
             Err(error) => return Err(error.into()),
         }
         let source_stamp = FileStamp::of(source)?;
+        let blob_stamp = FileStamp::of(blob)?;
         let actual = Digest::sha256_file(blob)?;
         if actual != *expected {
             let _ = std::fs::remove_file(blob);
@@ -274,6 +308,7 @@ impl Store {
                 actual,
             });
         }
+        self.remember_blob_if_unchanged(blob, blob_stamp, expected)?;
         self.record_shared_stamp(expected, source, source_stamp)?;
         Ok(ImportOutcome::Imported)
     }
@@ -369,15 +404,14 @@ impl Store {
     ) -> Result<Option<Digest>, StoreError> {
         let mut statement = self.conn.prepare(
             "SELECT digest FROM digest_cache
-             WHERE path = ?1 AND device = ?2 AND inode = ?3 AND size = ?4
-               AND mtime_secs = ?5 AND mtime_nanos = ?6
-               AND ctime_secs = ?7 AND ctime_nanos = ?8",
+             WHERE path = ?1 AND inode = ?2 AND size = ?3
+               AND mtime_secs = ?4 AND mtime_nanos = ?5
+               AND ctime_secs = ?6 AND ctime_nanos = ?7",
         )?;
         let digest = statement
             .query_row(
                 params![
                     path.to_string_lossy(),
-                    stamp.device,
                     stamp.inode,
                     stamp.size,
                     stamp.mtime_secs,
@@ -411,14 +445,13 @@ impl Store {
         self.conn.execute(
             "INSERT INTO digest_cache
                  (path, device, inode, size, mtime_secs, mtime_nanos, ctime_secs, ctime_nanos, digest)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             VALUES (?1, 0, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT(path) DO UPDATE SET
-                 device = ?2, inode = ?3, size = ?4,
-                 mtime_secs = ?5, mtime_nanos = ?6,
-                 ctime_secs = ?7, ctime_nanos = ?8, digest = ?9",
+                 device = 0, inode = ?2, size = ?3,
+                 mtime_secs = ?4, mtime_nanos = ?5,
+                 ctime_secs = ?6, ctime_nanos = ?7, digest = ?8",
             params![
                 path.to_string_lossy(),
-                stamp.device,
                 stamp.inode,
                 stamp.size,
                 stamp.mtime_secs,
@@ -438,19 +471,18 @@ impl Store {
     /// Registry or stat failure.
     pub fn path_is_shared(&self, digest: &Digest, path: &Path) -> Result<bool, StoreError> {
         let mut statement = self.conn.prepare(
-            "SELECT device, inode, size, mtime_secs, mtime_nanos, ctime_secs, ctime_nanos
+            "SELECT inode, size, mtime_secs, mtime_nanos, ctime_secs, ctime_nanos
              FROM shared_paths WHERE path = ?1 AND digest = ?2",
         )?;
         let stored =
             statement.query_row(params![path.to_string_lossy(), digest.to_string()], |row| {
                 Ok(FileStamp {
-                    device: row.get(0)?,
-                    inode: row.get(1)?,
-                    size: row.get(2)?,
-                    mtime_secs: row.get(3)?,
-                    mtime_nanos: row.get(4)?,
-                    ctime_secs: row.get(5)?,
-                    ctime_nanos: row.get(6)?,
+                    inode: row.get(0)?,
+                    size: row.get(1)?,
+                    mtime_secs: row.get(2)?,
+                    mtime_nanos: row.get(3)?,
+                    ctime_secs: row.get(4)?,
+                    ctime_nanos: row.get(5)?,
                 })
             });
         match stored {
@@ -491,11 +523,16 @@ impl Store {
     /// failure. Rows are only dropped after the blob file is gone, so a failed
     /// delete leaves the artifact intact and retryable.
     pub fn remove_artifact(&self, digest: &Digest) -> Result<(), StoreError> {
-        match std::fs::remove_file(self.blob_path(digest)) {
+        let blob = self.blob_path(digest);
+        match std::fs::remove_file(&blob) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
         }
+        self.conn.execute(
+            "DELETE FROM digest_cache WHERE path = ?1",
+            params![blob.to_string_lossy()],
+        )?;
         self.conn.execute(
             "DELETE FROM shared_paths WHERE digest = ?1",
             params![digest.to_string()],
@@ -504,7 +541,6 @@ impl Store {
             "DELETE FROM artifacts WHERE digest = ?1",
             params![digest.to_string()],
         )?;
-        self.verified_blobs.borrow_mut().remove(digest);
         Ok(())
     }
 
@@ -537,15 +573,14 @@ impl Store {
         self.conn.execute(
             "INSERT INTO shared_paths
                  (path, digest, device, inode, size, mtime_secs, mtime_nanos, ctime_secs, ctime_nanos)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             VALUES (?1, ?2, 0, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT(path) DO UPDATE SET
-                 digest = ?2, device = ?3, inode = ?4, size = ?5,
-                 mtime_secs = ?6, mtime_nanos = ?7,
-                 ctime_secs = ?8, ctime_nanos = ?9",
+                 digest = ?2, device = 0, inode = ?3, size = ?4,
+                 mtime_secs = ?5, mtime_nanos = ?6,
+                 ctime_secs = ?7, ctime_nanos = ?8",
             params![
                 path.to_string_lossy(),
                 digest.to_string(),
-                stamp.device,
                 stamp.inode,
                 stamp.size,
                 stamp.mtime_secs,
@@ -667,6 +702,52 @@ impl Store {
             .collect::<Result<Vec<_>, _>>()?;
         Ok(references)
     }
+}
+
+/// Exclusive advisory lock serializing mutations of one store.
+///
+/// Every command that changes provider files, blobs, the registry, or the
+/// journal holds it: the journal is rewritten whole on append, so two
+/// concurrent writers (say, the daemon and a manual `dedupe`) could silently
+/// drop an entry and make a swap unrestorable. The lock is `flock(2)` on
+/// `<root>/lock`, released when the value drops or the process dies.
+#[derive(Debug)]
+pub struct StoreLock {
+    _file: std::fs::File,
+}
+
+impl StoreLock {
+    /// Blocks until the store at `root` is exclusively locked.
+    ///
+    /// # Errors
+    /// I/O error creating the store directory or lock file, or locking it.
+    pub fn acquire(root: &Path) -> Result<Self, StoreError> {
+        let file = open_lock_file(root)?;
+        file.lock()?;
+        Ok(Self { _file: file })
+    }
+
+    /// Locks the store at `root` if no other holder has it; `None` otherwise.
+    ///
+    /// # Errors
+    /// I/O error creating the store directory or lock file, or locking it.
+    pub fn try_acquire(root: &Path) -> Result<Option<Self>, StoreError> {
+        let file = open_lock_file(root)?;
+        match file.try_lock() {
+            Ok(()) => Ok(Some(Self { _file: file })),
+            Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+            Err(std::fs::TryLockError::Error(error)) => Err(error.into()),
+        }
+    }
+}
+
+fn open_lock_file(root: &Path) -> std::io::Result<std::fs::File> {
+    std::fs::create_dir_all(root)?;
+    std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(root.join("lock"))
 }
 
 /// Current wall-clock as epoch seconds (sync stamps, import timestamps).
@@ -834,7 +915,6 @@ mod tests {
         let path = dir.path().join("file");
         let digest = Digest::new(Algorithm::Sha256, vec![9; 32]).expect("digest");
         let stamp = FileStamp {
-            device: 1,
             inode: 2,
             size: 10,
             mtime_secs: 1000,
@@ -948,6 +1028,98 @@ mod tests {
         let (_dir, store) = store();
         let digest = Digest::new(Algorithm::Sha256, vec![7; 32]).expect("digest");
         assert!(!store.semantics_pending(&digest).expect("pending"));
+    }
+
+    /// Simulates a reboot: macOS reassigns APFS device numbers at mount time.
+    fn renumber_devices(store: &Store) {
+        store
+            .conn
+            .execute_batch(
+                "UPDATE digest_cache SET device = device + 3;
+                 UPDATE shared_paths SET device = device + 3;",
+            )
+            .expect("renumber devices");
+    }
+
+    #[test]
+    fn digest_cache_survives_a_device_renumbering() {
+        let (dir, store) = store();
+        let (source, digest) = digest_of(b"weights", dir.path());
+        store
+            .remember_digest(&source, FileStamp::of(&source).expect("stat"), &digest)
+            .expect("remember");
+
+        renumber_devices(&store);
+
+        let stamp = FileStamp::of(&source).expect("stat");
+        assert_eq!(
+            store.cached_digest(&source, stamp).expect("query"),
+            Some(digest)
+        );
+    }
+
+    #[test]
+    fn recorded_clone_survives_a_device_renumbering() {
+        let (dir, store) = store();
+        let (source, digest) = digest_of(b"weights", dir.path());
+        store.import_blob(&source, &digest, None).expect("import");
+
+        renumber_devices(&store);
+
+        assert!(store.path_is_shared(&digest, &source).expect("shared"));
+    }
+
+    #[test]
+    fn store_lock_excludes_a_second_holder_until_released() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let root = dir.path().join(".modeld");
+
+        let held = StoreLock::acquire(&root).expect("acquire");
+        assert!(StoreLock::try_acquire(&root).expect("try").is_none());
+        drop(held);
+
+        assert!(StoreLock::try_acquire(&root).expect("try").is_some());
+    }
+
+    #[test]
+    fn verified_blob_stays_verified_across_store_reopen() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let (source, digest) = digest_of(b"weights", dir.path());
+        let root = dir.path().join(".modeld");
+        Store::open(root.clone())
+            .expect("open store")
+            .import_blob(&source, &digest, None)
+            .expect("import");
+
+        let reopened = Store::open(root).expect("reopen store");
+        let blob = reopened.blob_path(&digest);
+        let stamp = FileStamp::of(&blob).expect("stat blob");
+
+        assert_eq!(
+            reopened.cached_digest(&blob, stamp).expect("query"),
+            Some(digest)
+        );
+    }
+
+    #[test]
+    fn blob_tampered_after_verification_is_repaired_on_next_import() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let (source, digest) = digest_of(b"weights", dir.path());
+        let root = dir.path().join(".modeld");
+        let store = Store::open(root.clone()).expect("open store");
+        store.import_blob(&source, &digest, None).expect("import");
+        std::fs::write(store.blob_path(&digest), b"tampered").expect("tamper blob");
+
+        let outcome = Store::open(root)
+            .expect("reopen store")
+            .import_blob(&source, &digest, None)
+            .expect("repair");
+
+        assert_eq!(outcome, ImportOutcome::Imported);
+        assert_eq!(
+            std::fs::read(store.blob_path(&digest)).expect("read blob"),
+            b"weights"
+        );
     }
 
     #[test]

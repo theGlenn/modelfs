@@ -94,3 +94,72 @@ Deleting a blob never touches clone bytes (copy-on-write): existing copies keep
 their extents. The blob file is removed before its registry rows, so a failed
 delete leaves the artifact intact and retryable. Reported sizes are logical;
 physical reclaim depends on whether other files still share the extents.
+
+## 2026-09-22 — Daemon: settle-gated reconcile passes under a store lock
+
+`modeld daemon` runs in the foreground and keeps the store converged. It
+watches every detected scan root with `FSEvents` (via `notify`), plus the store
+directory for `config.toml` edits, and runs *passes*. A pass is one
+`sync` followed by store-anchored consolidation. There is no per-file event
+handling: `FSEvents` coalesces and replays sticky flags (merely hashing a file
+comes back as Create/Modify), so events only say *when* to look, never *what*
+changed. The pass re-derives everything from the filesystem, which makes it
+idempotent. The extra no-op pass right after a busy one is expected and cheap.
+
+When a pass runs (earliest wins): 10 s after events go quiet, at most 2 min
+into a steady stream (such as a long download), when a deferred file settles,
+and every 15 min regardless. The periodic pass catches missed events and new
+glob-matched roots. Each pass re-detects roots and re-arms the watches.
+
+Settle rule: files modified within `RECENT_WRITE_WINDOW` (5 min) are deferred.
+They are not imported, and their old references are kept (the pass counts as
+incomplete, so nothing is pruned). Providers stage downloads under partial
+names, but manual folders and LM Studio's unverified staging path do not, and
+a half-written file must never become a blob. `modeld sync` keeps settling off
+because a manual command means "now".
+
+Store-anchored consolidation: after sync, any synced file that the registry
+does not record as sharing its blob's extents becomes a clone of the blob. That
+also covers the single-copy case that `dedupe`'s group planning misses: a
+model re-downloaded after its original was deleted still duplicates the blob.
+The conservative swap protocol above applies unchanged.
+
+Store lock: `flock(2)` on `~/.modeld/lock`. Every daemon pass and every
+mutating command (`sync`, `dedupe`, `restore`, `gc`) holds it. The journal is
+rewritten whole on each append, so two unlocked writers could drop an entry and
+make a swap unrestorable. Read-only commands (`ls`, `where`, `scan`, `doctor`)
+never wait.
+
+Blob verification is cached: the blob's digest goes into the same stamp-keyed
+digest cache as provider files. A blob is re-hashed only when its stamp
+(inode, size, mtime, ctime) changes. Before this, every sync re-hashed every
+blob, so a daemon pass was as slow as a full store read. Silent media
+corruption that leaves the stamp alone is out of scope here; that is a job for
+a future `doctor --verify`.
+
+Shutdown: the first SIGINT/SIGTERM stops the daemon between passes, and a pass
+in flight always finishes, so a swap is never cut off before it is journaled.
+A second signal exits immediately.
+
+## 2026-09-22 — File stamps ignore device numbers; APFS confirms untracked clones
+
+The first live daemon dry run planned to re-clone 20 files (7.8 GB) that
+were already clones. There were two causes.
+
+1. **macOS reassigns APFS `st_dev` at boot.** `FileStamp` included the device
+   number, so after every restart the digest cache, the blob verification
+   cache, and every recorded clone all missed. Each sync re-hashed everything:
+   that was the slow-sync watch-item, and the first daemon pass took 9 minutes.
+   Stamps are always compared for the same path, so inode + size + nanosecond
+   mtime/ctime is enough. The `device` columns stay in the schema, written as 0
+   and never matched. Warm pass time went from 9 min to under 1 s.
+2. **Imports older than `shared_paths` had no clone record.** A blob cloned
+   *from* a provider file before the table existed left that file looking like
+   a duplicate. The planner now asks APFS: `fcntl(F_LOG2PHYS_EXT)` maps 16
+   evenly spaced offsets of both files to device offsets, and clones map to the
+   same blocks. A file that already shares its blob is recorded (adopted), not
+   replaced. The check is sampled, so a clone that diverged only between
+   samples still counts as shared; that only costs missed savings, never
+   correctness. Live result: 8 of the 10 remaining candidates were adopted, and
+   the 2 real duplicates left (a 10.1 MB Qwen vocab/merges pair) are true
+   copies.

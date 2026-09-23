@@ -8,10 +8,7 @@ use std::path::Path;
 
 /// Replacements making group members clones of `canonical` (the store blob).
 ///
-/// Policy: paths already known to share the canonical's extents are excluded,
-/// members on another volume are excluded (`clonefile` cannot cross volumes),
-/// and multiply-linked files are excluded because replacing one visible path
-/// cannot prove that their inode's storage will be released.
+/// Members failing [`is_consolidatable`] are left alone.
 pub fn replacements_for_group(
     artifacts: &[Artifact],
     group: &DuplicateGroup,
@@ -24,15 +21,7 @@ pub fn replacements_for_group(
         .iter()
         .map(|&index| &artifacts[index])
         .filter(|victim| {
-            let hardlinked_to_canonical = canonical_id.is_some() && victim.file_id == canonical_id;
-            let same_device = match (canonical_id, victim.file_id) {
-                (Some(a), Some(b)) => a.device == b.device,
-                _ => false,
-            };
-            !hardlinked_to_canonical
-                && !already_shared.contains(&victim.path)
-                && victim.link_count == Some(1)
-                && same_device
+            is_consolidatable(victim, canonical_id, already_shared.contains(&victim.path))
         })
         .map(|victim| Replacement {
             canonical: canonical.to_path_buf(),
@@ -41,6 +30,25 @@ pub fn replacements_for_group(
             size: group.size,
         })
         .collect()
+}
+
+/// Whether `victim` may be replaced with a clone of the canonical blob.
+///
+/// Policy: paths already known to share the canonical's extents are excluded,
+/// members on another volume are excluded (`clonefile` cannot cross volumes),
+/// and multiply-linked files are excluded because replacing one visible path
+/// cannot prove that their inode's storage will be released.
+pub fn is_consolidatable(
+    victim: &Artifact,
+    canonical_id: Option<FileId>,
+    already_shared: bool,
+) -> bool {
+    let hardlinked_to_canonical = canonical_id.is_some() && victim.file_id == canonical_id;
+    let same_device = match (canonical_id, victim.file_id) {
+        (Some(a), Some(b)) => a.device == b.device,
+        _ => false,
+    };
+    !hardlinked_to_canonical && !already_shared && victim.link_count == Some(1) && same_device
 }
 
 #[cfg(test)]

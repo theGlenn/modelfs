@@ -9,10 +9,15 @@
 //!   paths. The replaced file's original bytes survive under the temp name as an
 //!   instant rollback until explicitly released.
 //!
+//! [`shares_extents`] (`fcntl(F_LOG2PHYS_EXT)`) answers the inverse question —
+//! are two files already clones? — for files modeld did not record cloning.
+//!
 //! Measured on this project's dev machine: cloning a 44 MB blob allocated 0 blocks.
 
 use std::ffi::CString;
+use std::fs::File;
 use std::io;
+use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
@@ -55,6 +60,50 @@ pub fn swap_files(a: &Path, b: &Path) -> io::Result<()> {
     }
 }
 
+/// Whether `a` and `b` are backed by the same physical blocks (an APFS clone pair).
+///
+/// Maps evenly spaced file offsets to device offsets with
+/// `fcntl(F_LOG2PHYS_EXT)` and compares them. Clones map every offset to the
+/// same block until copy-on-write diverges them; independent copies never do.
+/// Sampled, so a clone diverged only between samples still reads as shared.
+///
+/// # Errors
+/// Opening either file or the mapping call failed (e.g. a filesystem without
+/// physical mapping support).
+pub fn shares_extents(a: &Path, b: &Path) -> io::Result<bool> {
+    const SAMPLES: u64 = 16;
+    let (a, b) = (File::open(a)?, File::open(b)?);
+    let len = a.metadata()?.len();
+    if len == 0 || len != b.metadata()?.len() {
+        return Ok(false);
+    }
+    for sample in 0..SAMPLES {
+        let offset = (len - 1) * sample / (SAMPLES - 1);
+        if device_offset(&a, offset)? != device_offset(&b, offset)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Physical device offset backing byte `offset` of `file`.
+fn device_offset(file: &File, offset: u64) -> io::Result<libc::off_t> {
+    let mut mapping = libc::log2phys {
+        l2p_flags: 0,
+        l2p_contigbytes: 1,
+        l2p_devoffset: libc::off_t::try_from(offset)
+            .map_err(|_overflow| io::Error::new(io::ErrorKind::InvalidInput, "offset too large"))?,
+    };
+    // SAFETY: the descriptor is open for the lifetime of `file`, and `mapping`
+    // is a valid, exclusively borrowed `log2phys` that F_LOG2PHYS_EXT reads
+    // (file offset, length) and overwrites (device offset) synchronously.
+    let rc = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_LOG2PHYS_EXT, &raw mut mapping) };
+    if rc == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(mapping.l2p_devoffset)
+}
+
 fn cstring(path: &Path) -> io::Result<CString> {
     CString::new(path.as_os_str().as_bytes())
         .map_err(|_nul| io::Error::new(io::ErrorKind::InvalidInput, "path contains NUL byte"))
@@ -86,6 +135,56 @@ mod tests {
 
         let error = clone_file(&src, &dst).expect_err("must refuse");
         assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+    }
+
+    /// Writes a multi-block file and forces allocation so blocks have addresses.
+    fn allocated_file(path: &Path) {
+        let content: Vec<u8> = (0..256 * 1024u32).map(|i| (i % 251) as u8).collect();
+        let mut file = std::fs::File::create(path).expect("create");
+        std::io::Write::write_all(&mut file, &content).expect("write");
+        file.sync_all().expect("sync");
+    }
+
+    #[test]
+    fn clone_shares_extents_with_its_source() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let src = dir.path().join("src");
+        let dst = dir.path().join("dst");
+        allocated_file(&src);
+
+        clone_file(&src, &dst).expect("clonefile");
+
+        assert!(shares_extents(&src, &dst).expect("map"));
+    }
+
+    #[test]
+    fn independent_copy_shares_no_extents() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let a = dir.path().join("a");
+        let b = dir.path().join("b");
+        allocated_file(&a);
+        allocated_file(&b);
+
+        assert!(!shares_extents(&a, &b).expect("map"));
+    }
+
+    #[test]
+    fn clone_stops_sharing_where_it_was_rewritten() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let src = dir.path().join("src");
+        let dst = dir.path().join("dst");
+        allocated_file(&src);
+        clone_file(&src, &dst).expect("clonefile");
+
+        let content = std::fs::read(&src).expect("read");
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&dst)
+            .expect("open clone");
+        std::io::Write::write_all(&mut file, &content).expect("rewrite same bytes");
+        file.sync_all().expect("sync");
+
+        assert!(!shares_extents(&src, &dst).expect("map"));
     }
 
     #[test]

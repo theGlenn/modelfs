@@ -1,14 +1,21 @@
 use clap::{Parser, Subcommand};
-use modeld_core::{Artifact, Digest};
+use modeld_core::Digest;
 use modeld_providers::scan::ScanOutcome;
-use modeld_store::{FileStamp, Store};
-use std::collections::{HashMap, HashSet};
+use modeld_store::{Store, StoreLock};
+use std::collections::HashSet;
 use std::os::unix::fs::MetadataExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
+mod consolidation;
+mod daemon;
+mod events;
 mod plan;
+mod reconcile;
 mod report;
+mod schedule;
 mod semantics;
+mod sync;
 
 #[derive(Parser)]
 #[command(name = "modeld", version, about = "Local model storage layer")]
@@ -54,6 +61,15 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Watch model folders; import settled downloads and clone duplicates
+    Daemon {
+        /// Keep the registry in sync but only log clones, never make them
+        #[arg(long)]
+        dry_run: bool,
+        /// Ignore files smaller than this many bytes
+        #[arg(long, default_value_t = modeld_providers::scan::DEFAULT_MIN_SIZE)]
+        min_size: u64,
+    },
 }
 
 fn main() {
@@ -66,6 +82,7 @@ fn main() {
         Command::Dedupe { dry_run, min_size } => dedupe(dry_run, min_size),
         Command::Restore => restore(),
         Command::Gc { dry_run } => gc(dry_run),
+        Command::Daemon { dry_run, min_size } => daemon(dry_run, min_size),
     }
 }
 
@@ -100,77 +117,26 @@ fn scan(min_size: u64) {
 }
 
 fn sync(min_size: u64) {
-    let Some(mut outcome) = scan_providers(min_size) else {
+    let _lock = lock_store();
+    let Some(outcome) = scan_providers(min_size) else {
         return;
     };
     let store = open_store();
-    let stamp = modeld_store::sync_stamp();
-    let mut imported = 0usize;
-    let mut referenced = 0usize;
-    let mut can_prune = outcome.skipped.is_empty();
-
-    for artifact in &mut outcome.artifacts {
-        if !ensure_verified_digest(&store, artifact) {
-            can_prune = false;
-            eprintln!(
-                "skip {} (file changed or could not be hashed)",
-                artifact.path.display()
-            );
-            continue;
-        }
-        let Some(digest) = artifact.digest.clone() else {
-            continue;
-        };
-        if digest.algorithm() != modeld_core::Algorithm::Sha256 {
-            continue;
-        }
-        match store.import_blob(&artifact.path, &digest, artifact.format.as_ref()) {
-            Ok(modeld_store::ImportOutcome::Imported) => imported += 1,
-            Ok(modeld_store::ImportOutcome::AlreadyPresent) => {}
-            Ok(modeld_store::ImportOutcome::NotCloneable) => {
-                can_prune = false;
-                eprintln!("skip {} (different volume)", artifact.path.display());
-                continue;
-            }
-            Err(error) => {
-                can_prune = false;
-                eprintln!("skip {} ({error})", artifact.path.display());
-                continue;
-            }
-        }
-        let recorded = store.record_reference(
-            &digest,
-            &artifact.path,
-            artifact.provider,
-            artifact.label.as_deref(),
-            stamp,
-        );
-        match recorded {
-            Ok(()) => {
-                referenced += 1;
-                record_semantics_if_pending(&store, &digest, artifact);
-            }
-            Err(error) => {
-                can_prune = false;
-                eprintln!("skip ref {} ({error})", artifact.path.display());
-            }
-        }
+    let report = sync::run(&store, outcome, Duration::ZERO, print_hashing);
+    for skipped in &report.skipped {
+        eprintln!("skip {} ({})", skipped.path.display(), skipped.reason);
     }
-
-    let pruned = if can_prune {
-        match store.prune_references_before(stamp) {
-            Ok(pruned) => pruned,
-            Err(error) => {
-                eprintln!("warning: stale references were not pruned ({error})");
-                0
-            }
-        }
-    } else {
+    for warning in &report.warnings {
+        eprintln!("warning: {warning}");
+    }
+    if !report.is_complete() {
         eprintln!("warning: incomplete sync; stale references were not pruned");
-        0
-    };
+    }
     println!(
-        "Synced: {imported} new blob(s), {referenced} reference(s), {pruned} stale reference(s) pruned"
+        "Synced: {} new blob(s), {} reference(s), {} stale reference(s) pruned",
+        report.imported,
+        report.synced.len(),
+        report.pruned.unwrap_or(0)
     );
     match store.totals() {
         Ok(totals) => print!("{}", report::render_totals(totals)),
@@ -210,6 +176,7 @@ fn locate(query: &str) {
 }
 
 fn dedupe(dry_run: bool, min_size: u64) {
+    let _lock = lock_store();
     let Some(outcome) = scan_and_hash(min_size) else {
         return;
     };
@@ -289,25 +256,14 @@ fn dedupe(dry_run: bool, min_size: u64) {
     }
 
     let journal = open_journal();
-    let result = modeld_core::consolidate::consolidate(&replacements, &journal);
-    let digests_by_path: HashMap<_, _> = replacements
-        .iter()
-        .map(|replacement| (&replacement.victim, &replacement.digest))
-        .collect();
-    for path in &result.completed {
-        if let Some(digest) = digests_by_path.get(path)
-            && let Err(error) = store.record_shared_path(digest, path)
-        {
-            eprintln!(
-                "warning: could not remember clone state for {} ({error})",
-                path.display()
-            );
-        }
-    }
+    let result = consolidation::apply(&store, &journal, &replacements, |warning| {
+        eprintln!("warning: {warning}");
+    });
     print!("{}", report::render_consolidation(&result, "Freed"));
 }
 
 fn restore() {
+    let _lock = lock_store();
     let journal = open_journal();
     match modeld_core::consolidate::restore(&journal) {
         Ok(result) => {
@@ -332,6 +288,7 @@ fn restore() {
 /// Deletes store blobs that nothing references: no provider path, no pending
 /// journaled swap, no live clone recorded in `shared_paths`.
 fn gc(dry_run: bool) {
+    let _lock = lock_store();
     let store = open_store();
     let journal = open_journal();
     // A journaled swap needs its canonical blob to restore; without a readable
@@ -396,62 +353,8 @@ fn gc(dry_run: bool) {
     );
 }
 
-/// Reads header facts for a newly stored artifact; later syncs skip it.
-fn record_semantics_if_pending(store: &Store, digest: &Digest, artifact: &Artifact) {
-    match store.semantics_pending(digest) {
-        Ok(true) => {
-            let semantics = semantics::analyze(artifact, &store.blob_path(digest));
-            if let Err(error) = store.record_semantics(digest, &semantics) {
-                eprintln!(
-                    "warning: could not record semantics for {} ({error})",
-                    artifact.path.display()
-                );
-            }
-        }
-        Ok(false) => {}
-        Err(error) => eprintln!(
-            "warning: semantics check failed for {} ({error})",
-            artifact.path.display()
-        ),
-    }
-}
-
-/// Verifies (or computes) the artifact's digest, consulting the store's cache.
-///
-/// Harvested digests are claims; sync trusts only hashes modeld computed itself.
-/// Returns false when the file cannot be hashed.
-fn ensure_verified_digest(store: &Store, artifact: &mut Artifact) -> bool {
-    if artifact.digest_verified {
-        return true;
-    }
-    let Ok(before) = FileStamp::of(&artifact.path) else {
-        return false;
-    };
-    if before.size != artifact.size {
-        return false;
-    }
-    if let Ok(Some(cached)) = store.cached_digest(&artifact.path, before)
-        && FileStamp::of(&artifact.path).is_ok_and(|after| after == before)
-    {
-        artifact.digest = Some(cached);
-        artifact.digest_verified = true;
-        return true;
-    }
-    eprintln!(
-        "hashing {} ({})",
-        artifact.path.display(),
-        report::human_bytes(artifact.size)
-    );
-    let Ok(actual) = Digest::sha256_file(&artifact.path) else {
-        return false;
-    };
-    if !FileStamp::of(&artifact.path).is_ok_and(|after| after == before) {
-        return false;
-    }
-    let _ = store.remember_digest(&artifact.path, before, &actual);
-    artifact.digest = Some(actual);
-    artifact.digest_verified = true;
-    true
+fn print_hashing(path: &Path, size: u64) {
+    eprintln!("hashing {} ({})", path.display(), report::human_bytes(size));
 }
 
 fn scan_providers(min_size: u64) -> Option<ScanOutcome> {
@@ -468,9 +371,7 @@ fn scan_providers(min_size: u64) -> Option<ScanOutcome> {
 
 fn scan_and_hash(min_size: u64) -> Option<ScanOutcome> {
     let mut outcome = scan_providers(min_size)?;
-    modeld_providers::scan::hash_for_dedup(&mut outcome, |path, size| {
-        eprintln!("hashing {} ({})", path.display(), report::human_bytes(size));
-    });
+    modeld_providers::scan::hash_for_dedup(&mut outcome, print_hashing);
     Some(outcome)
 }
 
@@ -479,6 +380,38 @@ fn open_store() -> Store {
         Ok(store) => store,
         Err(error) => {
             eprintln!("cannot open store: {error}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn daemon(dry_run: bool, min_size: u64) {
+    let options = reconcile::PassOptions {
+        settle: modeld_core::consolidate::RECENT_WRITE_WINDOW,
+        min_size,
+        dry_run,
+    };
+    if let Err(error) = daemon::run(&modeld_home(), options) {
+        eprintln!("daemon failed: {error}");
+        std::process::exit(1);
+    }
+}
+
+/// Serializes this command with the daemon and other mutating commands.
+fn lock_store() -> StoreLock {
+    let home = modeld_home();
+    let lock = match StoreLock::try_acquire(&home) {
+        Ok(Some(lock)) => Ok(lock),
+        Ok(None) => {
+            eprintln!("waiting for another modeld process (daemon pass?) to finish…");
+            StoreLock::acquire(&home)
+        }
+        Err(error) => Err(error),
+    };
+    match lock {
+        Ok(lock) => lock,
+        Err(error) => {
+            eprintln!("cannot lock store: {error}");
             std::process::exit(1);
         }
     }
