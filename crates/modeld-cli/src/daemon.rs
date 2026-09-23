@@ -9,7 +9,8 @@
 //!
 //! SIGINT/SIGTERM stop the daemon between passes. A pass in flight always
 //! completes, so a consolidation swap is never cut off before it is journaled;
-//! a second signal exits immediately.
+//! a pass still waiting for the store lock is abandoned instead. A second
+//! signal exits immediately.
 
 use crate::events::EventFilter;
 use crate::reconcile::{self, PassOptions, PassReport};
@@ -68,7 +69,7 @@ pub fn run(store_root: &Path, options: PassOptions) -> Result<(), Box<dyn std::e
             let detection = modeld_providers::detect_all();
             watches.follow(&detection.roots);
             filter = EventFilter::new(&detection.roots, store_root);
-            let retry_in = run_pass(store_root, &detection, options);
+            let retry_in = run_pass(store_root, &detection, options, &stop);
             schedule.pass_finished(Instant::now(), retry_in);
             continue;
         }
@@ -99,7 +100,12 @@ fn stop_flag() -> std::io::Result<Arc<AtomicBool>> {
 }
 
 /// Runs one pass and logs it; returns how soon the next pass is wanted.
-fn run_pass(store_root: &Path, detection: &Detection, options: PassOptions) -> Option<Duration> {
+fn run_pass(
+    store_root: &Path,
+    detection: &Detection,
+    options: PassOptions,
+    stop: &AtomicBool,
+) -> Option<Duration> {
     let hashing = |path: &Path, size: u64| {
         log(format!(
             "hashing {} ({})",
@@ -107,8 +113,9 @@ fn run_pass(store_root: &Path, detection: &Detection, options: PassOptions) -> O
             human_bytes(size)
         ));
     };
-    match reconcile::run(store_root, detection, options, hashing) {
-        Ok(report) => {
+    match reconcile::run(store_root, detection, options, stop, hashing) {
+        Ok(None) => None, // stopped while waiting for the store lock
+        Ok(Some(report)) => {
             log_details(&report);
             log(summarize(&report));
             report.sync.next_settle().map(|wait| wait + SETTLE_MARGIN)

@@ -1,7 +1,8 @@
 //! One daemon pass: sync every root, then clone duplicates of stored blobs.
 //!
 //! The pass holds the [`StoreLock`] throughout, so it never interleaves with
-//! a manual `sync`, `dedupe`, `restore`, or `gc`. Files still settling are
+//! a manual `sync`, `dedupe`, `restore`, or `gc`; waiting for that lock ends
+//! early when the daemon is asked to stop. Files still settling are
 //! deferred by the sync step and never reach consolidation; the report says
 //! when the soonest of them settles so the daemon can come back for it.
 
@@ -10,7 +11,11 @@ use modeld_core::consolidate::{Journal, Replacement, Report};
 use modeld_providers::Detection;
 use modeld_store::{Store, StoreError, StoreLock};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
+
+/// How often a pass waiting for the store lock re-checks the stop flag.
+const LOCK_POLL: Duration = Duration::from_millis(250);
 
 /// How a pass behaves.
 #[derive(Debug, Clone, Copy)]
@@ -37,7 +42,9 @@ pub struct PassReport {
 
 /// Runs one pass over the detected roots against the store at `store_root`.
 ///
-/// `progress` is called with each path before it is hashed.
+/// Returns `None`, having changed nothing, when `stop` was raised before the
+/// store lock came free. `progress` is called with each path before it is
+/// hashed.
 ///
 /// # Errors
 /// Locking or opening the store or its journal failed; nothing was changed.
@@ -45,9 +52,14 @@ pub fn run(
     store_root: &Path,
     detection: &Detection,
     options: PassOptions,
+    stop: &AtomicBool,
     progress: impl FnMut(&Path, u64),
-) -> Result<PassReport, StoreError> {
-    let _lock = StoreLock::acquire(store_root)?;
+) -> Result<Option<PassReport>, StoreError> {
+    let Some(_lock) =
+        StoreLock::acquire_unless(store_root, LOCK_POLL, || stop.load(Ordering::Relaxed))?
+    else {
+        return Ok(None);
+    };
     let store = Store::open(store_root.to_path_buf())?;
     let journal = Journal::open(store_root.join("journal.jsonl"))?;
 
@@ -58,12 +70,12 @@ pub fn run(
     let consolidation = (!options.dry_run && !planned.is_empty()).then(|| {
         crate::consolidation::apply(&store, &journal, &planned, |warning| warnings.push(warning))
     });
-    Ok(PassReport {
+    Ok(Some(PassReport {
         sync,
         planned,
         consolidation,
         warnings,
-    })
+    }))
 }
 
 #[cfg(test)]
@@ -78,6 +90,9 @@ mod tests {
         dry_run: false,
     };
 
+    /// A stop flag that is never raised.
+    static RUNNING: AtomicBool = AtomicBool::new(false);
+
     fn pass(fixture: &Fixture, options: PassOptions) -> PassReport {
         let detection = Detection {
             roots: vec![fixture.root.clone()],
@@ -87,9 +102,11 @@ mod tests {
             &fixture.dir.path().join(".modeld"),
             &detection,
             options,
+            &RUNNING,
             |_, _| {},
         )
         .expect("pass")
+        .expect("not stopped")
     }
 
     fn journal_len(fixture: &Fixture) -> usize {
@@ -155,6 +172,7 @@ mod tests {
             unreadable: vec![Skipped {
                 path: fixture.dir.path().join(".modeld/config.toml"),
                 reason: "invalid TOML".to_string(),
+                untrackable: false,
             }],
         };
 
@@ -162,9 +180,11 @@ mod tests {
             &fixture.dir.path().join(".modeld"),
             &broken,
             OPTIONS,
+            &RUNNING,
             |_, _| {},
         )
-        .expect("pass");
+        .expect("pass")
+        .expect("not stopped");
 
         assert_eq!(report.sync.pruned, None);
         let artifacts = fixture.store.artifacts().expect("artifacts");
@@ -180,8 +200,14 @@ mod tests {
 
         let pass_root = store_root.clone();
         let pass = std::thread::spawn(move || {
-            let report = run(&pass_root, &Detection::default(), OPTIONS, |_, _| {});
-            done_tx.send(report.is_ok()).expect("send");
+            let report = run(
+                &pass_root,
+                &Detection::default(),
+                OPTIONS,
+                &RUNNING,
+                |_, _| {},
+            );
+            done_tx.send(matches!(report, Ok(Some(_)))).expect("send");
         });
 
         let early = done_rx.recv_timeout(Duration::from_millis(200));
@@ -190,5 +216,30 @@ mod tests {
 
         assert!(early.is_err(), "pass ran while the lock was held");
         assert_eq!(done_rx.recv(), Ok(true));
+    }
+
+    #[test]
+    fn stop_ends_the_wait_for_a_held_store_lock() {
+        let fixture = Fixture::new();
+        let store_root = fixture.dir.path().join(".modeld");
+        let _held = StoreLock::acquire(&store_root).expect("hold lock");
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+
+        let pass_stop = std::sync::Arc::clone(&stop);
+        let pass = std::thread::spawn(move || {
+            let report = run(
+                &store_root,
+                &Detection::default(),
+                OPTIONS,
+                &pass_stop,
+                |_, _| {},
+            );
+            done_tx.send(matches!(report, Ok(None))).expect("send");
+        });
+        stop.store(true, Ordering::Relaxed);
+
+        assert_eq!(done_rx.recv_timeout(Duration::from_secs(5)), Ok(true));
+        pass.join().expect("pass thread");
     }
 }

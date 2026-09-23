@@ -19,6 +19,7 @@ use std::fs::File;
 use std::io;
 use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
 /// Clones `src` to `dst` via `clonefile(2)`; `dst` must not exist.
@@ -73,8 +74,10 @@ pub fn swap_files(a: &Path, b: &Path) -> io::Result<()> {
 pub fn shares_extents(a: &Path, b: &Path) -> io::Result<bool> {
     const SAMPLES: u64 = 16;
     let (a, b) = (File::open(a)?, File::open(b)?);
-    let len = a.metadata()?.len();
-    if len == 0 || len != b.metadata()?.len() {
+    let (a_meta, b_meta) = (a.metadata()?, b.metadata()?);
+    // Device offsets are only comparable within one volume.
+    let len = a_meta.len();
+    if len == 0 || len != b_meta.len() || a_meta.dev() != b_meta.dev() {
         return Ok(false);
     }
     for sample in 0..SAMPLES {

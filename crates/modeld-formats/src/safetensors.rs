@@ -29,7 +29,10 @@ pub fn inspect_safetensors(path: &Path) -> Result<ModelInfo, FormatError> {
             "implausible header length {header_len}"
         )));
     }
-    let mut header = vec![0u8; usize::try_from(header_len).unwrap_or(0)];
+    let header_len = usize::try_from(header_len).map_err(|_overflow| {
+        FormatError::Malformed(format!("header length {header_len} too large"))
+    })?;
+    let mut header = vec![0u8; header_len];
     file.read_exact(&mut header)?;
     parse_header(&header)
 }

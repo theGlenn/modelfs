@@ -41,6 +41,7 @@ pub fn collect(root: &ProviderRoot, min_size: u64, outcome: &mut ScanOutcome) {
             outcome.skipped.push(Skipped {
                 path: blobs,
                 reason: format!("cannot list blobs: {error}"),
+                untrackable: false,
             });
             return;
         }
@@ -53,6 +54,7 @@ pub fn collect(root: &ProviderRoot, min_size: u64, outcome: &mut ScanOutcome) {
                 outcome.skipped.push(Skipped {
                     path: blobs.clone(),
                     reason: format!("cannot read directory entry: {error}"),
+                    untrackable: false,
                 });
                 continue;
             }
@@ -64,6 +66,7 @@ pub fn collect(root: &ProviderRoot, min_size: u64, outcome: &mut ScanOutcome) {
                 outcome.skipped.push(Skipped {
                     path,
                     reason: format!("cannot stat: {error}"),
+                    untrackable: false,
                 });
                 continue;
             }
@@ -76,6 +79,7 @@ pub fn collect(root: &ProviderRoot, min_size: u64, outcome: &mut ScanOutcome) {
             outcome.skipped.push(Skipped {
                 path,
                 reason: "not a completed sha256 blob".to_string(),
+                untrackable: true,
             });
             continue;
         };
@@ -123,6 +127,7 @@ fn labels_by_digest(manifests: &Path, outcome: &mut ScanOutcome) -> HashMap<Dige
             outcome.skipped.push(Skipped {
                 path: entry.path().to_path_buf(),
                 reason: "unparseable manifest".to_string(),
+                untrackable: true,
             });
             continue;
         };

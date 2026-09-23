@@ -23,6 +23,12 @@ pub const DEFAULT_MIN_SIZE: u64 = 1024 * 1024;
 pub struct Skipped {
     pub path: PathBuf,
     pub reason: String,
+    /// The path is not something modeld can ever track (not a model blob, on
+    /// another volume), rather than a model file this pass failed to read.
+    ///
+    /// Such a path never holds a reference, so it does not make a pass
+    /// incomplete: only failures block reference pruning.
+    pub untrackable: bool,
 }
 
 /// Everything a scan produced: artifacts plus non-fatal skips.
@@ -93,6 +99,7 @@ pub fn hash_for_dedup(outcome: &mut ScanOutcome, mut progress: impl FnMut(&Path,
             Err(error) => outcome.skipped.push(Skipped {
                 path: artifact.path.clone(),
                 reason: format!("hash failed: {error}"),
+                untrackable: false,
             }),
         }
     }
@@ -118,6 +125,7 @@ pub fn collect_model_tree(root: &crate::ProviderRoot, min_size: u64, outcome: &m
                         .path()
                         .map_or_else(|| root.root.clone(), Path::to_path_buf),
                     reason: format!("walk failed: {error}"),
+                    untrackable: false,
                 });
                 continue;
             }
@@ -131,6 +139,7 @@ pub fn collect_model_tree(root: &crate::ProviderRoot, min_size: u64, outcome: &m
                 outcome.skipped.push(Skipped {
                     path: entry.path().to_path_buf(),
                     reason: format!("cannot stat: {error}"),
+                    untrackable: false,
                 });
                 continue;
             }

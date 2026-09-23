@@ -18,7 +18,7 @@ use std::collections::HashSet;
 use std::fs::Metadata;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -158,6 +158,9 @@ impl Store {
         let conn = Connection::open(root.join("registry.db"))?;
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;
+             -- Read-only commands share this open: wait out a mutating
+             -- command's transaction instead of failing with SQLITE_BUSY.
+             PRAGMA busy_timeout = 5000;
              CREATE TABLE IF NOT EXISTS artifacts (
                  digest      TEXT PRIMARY KEY,
                  size        INTEGER NOT NULL,
@@ -196,6 +199,7 @@ impl Store {
              );",
         )?;
         migrate_stamp_columns(&conn, "digest_cache")?;
+        migrate_stamp_columns(&conn, "shared_paths")?;
         migrate_semantics_columns(&conn)?;
         Ok(Self { root, conn })
     }
@@ -230,8 +234,8 @@ impl Store {
         format: Option<&Format>,
     ) -> Result<ImportOutcome, StoreError> {
         let blob = self.blob_path(digest);
-        let outcome = match self.check_blob(&blob, digest)? {
-            BlobCheck::Verified => ImportOutcome::AlreadyPresent,
+        let (outcome, share_source) = match self.check_blob(&blob, digest)? {
+            BlobCheck::Verified => (ImportOutcome::AlreadyPresent, false),
             BlobCheck::Missing => self.clone_verified(source, verified, &blob, digest)?,
             BlobCheck::Corrupt => {
                 std::fs::remove_file(&blob)?;
@@ -243,6 +247,12 @@ impl Store {
         }
 
         let verified_size = std::fs::metadata(&blob)?.len();
+        // One transaction: a crash must not leave a blob whose shared-path
+        // record or artifact row was committed without the other.
+        let transaction = self.conn.unchecked_transaction()?;
+        if share_source {
+            self.record_shared_stamp(digest, source, verified)?;
+        }
         self.conn.execute(
             "INSERT INTO artifacts (digest, size, format, imported_at)
              VALUES (?1, ?2, ?3, ?4)
@@ -254,6 +264,7 @@ impl Store {
                 epoch_secs()
             ],
         )?;
+        transaction.commit()?;
         Ok(outcome)
     }
 
@@ -289,17 +300,21 @@ impl Store {
         Ok(())
     }
 
+    /// Clones `source` to `blob` and verifies the clone's digest.
+    ///
+    /// The returned flag tells the caller whether `source` still has the stamp
+    /// it was hashed at, and may therefore be recorded as sharing the blob.
     fn clone_verified(
         &self,
         source: &Path,
         verified: FileStamp,
         blob: &Path,
         expected: &Digest,
-    ) -> Result<ImportOutcome, StoreError> {
+    ) -> Result<(ImportOutcome, bool), StoreError> {
         match modeld_core::apfs::clone_file(source, blob) {
             Ok(()) => {}
             Err(error) if matches!(error.raw_os_error(), Some(libc::EXDEV | libc::ENOTSUP)) => {
-                return Ok(ImportOutcome::NotCloneable);
+                return Ok((ImportOutcome::NotCloneable, false));
             }
             Err(error) => return Err(error.into()),
         }
@@ -314,10 +329,8 @@ impl Store {
             });
         }
         self.remember_blob_if_unchanged(blob, blob_stamp, expected)?;
-        if FileStamp::of(source).is_ok_and(|now| now == verified) {
-            self.record_shared_stamp(expected, source, verified)?;
-        }
-        Ok(ImportOutcome::Imported)
+        let share_source = FileStamp::of(source).is_ok_and(|now| now == verified);
+        Ok((ImportOutcome::Imported, share_source))
     }
 
     /// Whether the artifact for `digest` still awaits header inspection.
@@ -536,18 +549,25 @@ impl Store {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
         }
-        self.conn.execute(
+        // One transaction: a crash must not leave a partial set of rows.
+        let transaction = self.conn.unchecked_transaction()?;
+        transaction.execute(
             "DELETE FROM digest_cache WHERE path = ?1",
             params![blob.to_string_lossy()],
         )?;
-        self.conn.execute(
+        transaction.execute(
             "DELETE FROM shared_paths WHERE digest = ?1",
             params![digest.to_string()],
         )?;
-        self.conn.execute(
+        transaction.execute(
+            "DELETE FROM refs WHERE digest = ?1",
+            params![digest.to_string()],
+        )?;
+        transaction.execute(
             "DELETE FROM artifacts WHERE digest = ?1",
             params![digest.to_string()],
         )?;
+        transaction.commit()?;
         Ok(())
     }
 
@@ -745,6 +765,27 @@ impl StoreLock {
             Err(std::fs::TryLockError::WouldBlock) => Ok(None),
             Err(std::fs::TryLockError::Error(error)) => Err(error.into()),
         }
+    }
+
+    /// Waits for the store at `root` like [`acquire`](Self::acquire), but
+    /// gives up with `None` once `cancelled` returns true.
+    ///
+    /// `cancelled` is checked before each attempt, every `poll` while waiting.
+    ///
+    /// # Errors
+    /// I/O error creating the store directory or lock file, or locking it.
+    pub fn acquire_unless(
+        root: &Path,
+        poll: Duration,
+        mut cancelled: impl FnMut() -> bool,
+    ) -> Result<Option<Self>, StoreError> {
+        while !cancelled() {
+            if let Some(lock) = Self::try_acquire(root)? {
+                return Ok(Some(lock));
+            }
+            std::thread::sleep(poll);
+        }
+        Ok(None)
     }
 }
 
@@ -995,6 +1036,9 @@ mod tests {
         store
             .import_blob(&source, stamp_of(&source), &digest, Some(&Format::Gguf))
             .expect("import");
+        store
+            .record_reference(&digest, &source, ProviderKind::Manual, None, 100)
+            .expect("ref");
         assert!(store.blob_path(&digest).exists());
 
         store.remove_artifact(&digest).expect("remove");
@@ -1004,6 +1048,43 @@ mod tests {
         assert!(!store.has_live_shared_path(&digest).expect("live"));
         // Removal is idempotent: a second call finds nothing and succeeds.
         store.remove_artifact(&digest).expect("re-remove");
+        // Re-importing the digest must not resurrect the old reference.
+        store
+            .import_blob(&source, stamp_of(&source), &digest, None)
+            .expect("re-import");
+        assert!(
+            store.artifacts().expect("artifacts")[0]
+                .references
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn registry_predating_stamp_columns_still_imports() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let root = dir.path().join(".modeld");
+        std::fs::create_dir_all(&root).expect("create store dir");
+        Connection::open(root.join("registry.db"))
+            .and_then(|conn| {
+                conn.execute_batch(
+                    "CREATE TABLE shared_paths (
+                         path        TEXT PRIMARY KEY,
+                         digest      TEXT NOT NULL,
+                         size        INTEGER NOT NULL,
+                         mtime_secs  INTEGER NOT NULL,
+                         mtime_nanos INTEGER NOT NULL
+                     );",
+                )
+            })
+            .expect("create legacy table");
+        let store = Store::open(root).expect("open legacy store");
+        let (source, digest) = digest_of(b"weights", dir.path());
+
+        store
+            .import_blob(&source, stamp_of(&source), &digest, None)
+            .expect("import");
+
+        assert!(store.path_is_shared(&digest, &source).expect("shared"));
     }
 
     #[test]
@@ -1100,6 +1181,21 @@ mod tests {
         drop(held);
 
         assert!(StoreLock::try_acquire(&root).expect("try").is_some());
+    }
+
+    #[test]
+    fn cancelled_lock_wait_gives_up_while_the_lock_is_held() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let _held = StoreLock::acquire(dir.path()).expect("acquire");
+        let mut polls = 0;
+
+        let waited = StoreLock::acquire_unless(dir.path(), Duration::from_millis(1), || {
+            polls += 1;
+            polls > 3
+        })
+        .expect("wait");
+
+        assert!(waited.is_none());
     }
 
     #[test]

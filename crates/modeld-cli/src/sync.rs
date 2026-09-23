@@ -33,10 +33,11 @@ pub struct SyncReport {
 }
 
 impl SyncReport {
-    /// Whether every scanned file was synced, making stale references provable.
+    /// Whether every trackable scanned file was synced, making stale
+    /// references provable.
     #[must_use]
     pub fn is_complete(&self) -> bool {
-        self.skipped.is_empty() && self.deferred.is_empty()
+        self.skipped.iter().all(|skip| skip.untrackable) && self.deferred.is_empty()
     }
 
     /// Time until the soonest deferred file settles, if any file was deferred.
@@ -61,6 +62,8 @@ enum Step {
     Synced(ImportOutcome),
     Deferred(Duration),
     Skipped(String),
+    /// On another volume: the store can never clone it, so it holds no reference.
+    NotCloneable,
     /// Not a sha256 artifact; the store cannot hold it, which is not a failure.
     Ignored,
 }
@@ -101,6 +104,14 @@ pub fn run(
                 report.skipped.push(Skipped {
                     path: artifact.path,
                     reason,
+                    untrackable: false,
+                });
+            }
+            Step::NotCloneable => {
+                report.skipped.push(Skipped {
+                    path: artifact.path,
+                    reason: "different volume".to_string(),
+                    untrackable: true,
                 });
             }
             Step::Ignored => {}
@@ -135,7 +146,7 @@ fn sync_artifact(
     }
     let format = artifact.format.as_ref();
     let imported = match store.import_blob(&artifact.path, verified, &digest, format) {
-        Ok(ImportOutcome::NotCloneable) => return Step::Skipped("different volume".to_string()),
+        Ok(ImportOutcome::NotCloneable) => return Step::NotCloneable,
         Ok(imported) => imported,
         Err(error) => return Step::Skipped(error.to_string()),
     };
@@ -359,6 +370,32 @@ pub(crate) mod tests {
         );
 
         assert_eq!(report.pruned, Some(1));
+    }
+
+    /// A scan of nothing but one skip, after `a.gguf` was synced and deleted.
+    fn run_with_one_skip(untrackable: bool) -> SyncReport {
+        let fixture = Fixture::new();
+        let model = fixture.settled_model("a.gguf", b"weights");
+        fixture.sync(Duration::ZERO);
+        std::fs::remove_file(&model).expect("delete model");
+        let mut scanned = ScanOutcome::new();
+        scanned.skipped.push(Skipped {
+            path: fixture.root.root.join("sha256-partial"),
+            reason: "test skip".to_string(),
+            untrackable,
+        });
+
+        run(&fixture.store, scanned, Duration::ZERO, |_, _| {})
+    }
+
+    #[test]
+    fn untrackable_skip_does_not_block_pruning() {
+        assert_eq!(run_with_one_skip(true).pruned, Some(1));
+    }
+
+    #[test]
+    fn failed_skip_blocks_pruning() {
+        assert_eq!(run_with_one_skip(false).pruned, None);
     }
 
     #[test]
