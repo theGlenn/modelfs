@@ -1,0 +1,9 @@
+/target
+.DS_Store
+*.md
+!README.md
+!Readme.md
+!AGENT.md
+!AGENTS.md
+!DECISIONS.md
+!providers/*.md

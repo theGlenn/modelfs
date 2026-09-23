@@ -1,0 +1,62 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/modeld-core",
+    "crates/modeld-formats",
+    "crates/modeld-providers",
+    "crates/modeld-store",
+    "crates/modeld-cli",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[workspace.lints.rust]
+missing_debug_implementations = "warn"
+redundant_imports = "warn"
+redundant_lifetimes = "warn"
+trivial_numeric_casts = "warn"
+unsafe_op_in_unsafe_fn = "warn"
+unused_lifetimes = "warn"
+
+[workspace.lints.clippy]
+complexity = { level = "warn", priority = -1 }
+correctness = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+style = { level = "warn", priority = -1 }
+suspicious = { level = "warn", priority = -1 }
+allow_attributes_without_reason = "warn"
+if_then_some_else_none = "warn"
+map_err_ignore = "warn"
+redundant_type_annotations = "warn"
+undocumented_unsafe_blocks = "warn"
+unnecessary_safety_comment = "warn"
+unused_result_ok = "warn"
+
+[workspace.dependencies]
+modeld-core = { path = "crates/modeld-core" }
+modeld-formats = { path = "crates/modeld-formats" }
+modeld-providers = { path = "crates/modeld-providers" }
+modeld-store = { path = "crates/modeld-store" }
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+hex = "0.4"
+clap = { version = "4", features = ["derive"] }
+walkdir = "2"
+tempfile = "3"
+libc = "0.2"
+rusqlite = { version = "0.32", features = ["bundled"] }
+toml = "0.8"
+glob = "0.3"
+notify = "8"
+signal-hook = "0.3"
+
+# sha2 at ~20 MB/s in debug builds makes sync unusable; hashing must always be fast.
+[profile.dev.package.sha2]
+opt-level = 3
