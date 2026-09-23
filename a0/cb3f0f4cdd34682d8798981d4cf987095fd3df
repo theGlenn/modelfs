@@ -1,0 +1,30 @@
+crates/modeld-cli/src/launchd.rs
+  s_296dcf387db366::t_985cbe974e1aea 14-371,376-377
+  s_296dcf387db366::t_c6241d84153e04 1-13,372-375
+Cargo.lock
+  s_296dcf387db366::t_88d0d930168557 399
+DECISIONS.md
+  s_296dcf387db366::t_224f6184874436 191-219
+crates/modeld-cli/Cargo.toml
+  s_296dcf387db366::t_c81f033dc2068e 20
+crates/modeld-cli/src/daemon.rs
+  s_296dcf387db366::t_7d627715169fe3 51-54,248-280,399-410
+crates/modeld-cli/src/main.rs
+  s_296dcf387db366::t_66b7d0ac0e7aae 13,67-68,70,73,78-87,98-107,452-500,532-536
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "a0cb3f0f4cdd34682d8798981d4cf987095fd3df",
+  "prompts": {},
+  "sessions": {
+    "s_296dcf387db366": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6a2f4fb7-066e-4fba-b1a6-1e7457694902",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Glenn Sonna <kenpachi.os@gmail.com>"
+    }
+  }
+}
