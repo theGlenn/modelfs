@@ -1,0 +1,39 @@
+DECISIONS.md
+  s_296dcf387db366::t_d5fd73b9fea207 166-190
+crates/modeld-cli/src/daemon.rs
+  s_296dcf387db366::t_3c72ea8a946ec6 18,64-67,98,106
+crates/modeld-cli/src/main.rs
+  s_296dcf387db366::t_b523e531da09a8 4,91-96,125-131,191-193,204-206,210-215,273-296,392,395,399
+crates/modeld-cli/src/reconcile.rs
+  s_296dcf387db366::t_b6f0d5ceb558e9 10,38,46,54,73,82-85,88,148-173,183
+crates/modeld-cli/src/sync.rs
+  s_296dcf387db366::t_aa9db04fc1bca0 127,129,136-137,142-145,218-219,224-225,227,230,237,240,242,247,347-363
+crates/modeld-core/src/dedup.rs
+  s_296dcf387db366::t_9c0c7181f96fe7 8,38-42,52,57,65-69,128,138,145-152,154,156-159,161-167
+crates/modeld-formats/src/safetensors.rs
+  s_296dcf387db366::t_281d1a4c0612fb 51,53-57,72-91,158-184
+crates/modeld-providers/src/config.rs
+  s_296dcf387db366::t_799999e20670da 39,46,48
+crates/modeld-providers/src/lib.rs
+  s_296dcf387db366::t_f06d366b212529 6-7,28,32-46,51-53,56-60,71-72,76-79,87-115
+crates/modeld-providers/src/scan.rs
+  s_296dcf387db366::t_51c764a2cb5c5e 9,42-46,59,63-77,264-282
+crates/modeld-store/src/lib.rs
+  s_296dcf387db366::t_faa342474461b1 215-220,228,235,238,295,317-319,839-842,856,859,875,908-910,961-963,982-984,996,1013-1015,1027,1084-1086,1105-1121,1129,1148-1150,1155,1172-1174
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "8ea22311950eccec3ef3e40d4f42e868da7d4b8a",
+  "prompts": {},
+  "sessions": {
+    "s_296dcf387db366": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6a2f4fb7-066e-4fba-b1a6-1e7457694902",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Glenn Sonna <kenpachi.os@gmail.com>"
+    }
+  }
+}
