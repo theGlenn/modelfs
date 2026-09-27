@@ -217,3 +217,28 @@ first, so re-running `install` is also how an update is applied. Choices:
   instead would make launchd restart it in a loop.
 - `uninstall` stops the agent and removes the plist; the installed binary and
   `~/.modeld/daemon.log` stay. The log is not rotated yet.
+
+## 2026-09-26 — Distribution: universal binary on GitHub Releases, personal Homebrew tap
+
+Pushing a `v*` tag runs `.github/workflows/release.yml`. It checks that the tag
+matches the `modeld-cli` version, runs the tests, builds `aarch64` and
+`x86_64` binaries, and merges them with `lipo` into one universal `modeld`. The
+tarball goes on a GitHub release with its SHA-256. Choices:
+
+- **Prebuilt binary, not a from-source formula.** A source formula would make
+  every user install Rust and compile for minutes. The binary links only macOS
+  system frameworks (SQLite is bundled), and the linker's ad-hoc signature is
+  enough: Homebrew downloads do not get the quarantine flag.
+- **Personal tap (`theGlenn/homebrew-tap`), not homebrew-core.** Core wants
+  source builds and a track record. `brew install theGlenn/tap/modelfs` is a
+  fully qualified name, so Homebrew's tap trust (default since 6.0) trusts it
+  without a separate `brew trust`.
+- **Formula bumped by the release job.** It rewrites the formula's `url` and
+  `sha256` using a fine-grained `HOMEBREW_TAP_TOKEN` scoped to the tap. With
+  no token set, the job warns and the formula is updated by hand.
+- **Pinned toolchain.** `rust-toolchain.toml` pins 1.95.0, and CI runs clippy
+  with `-D warnings`. A floating `stable` would break CI whenever a new clippy
+  lint shipped, unrelated to any change.
+- **Upgrades need `modeld daemon install` again.** The launchd agent runs its
+  own copy of the binary (see the entry above), so `brew upgrade` alone
+  leaves the daemon on the old version. The formula's caveats say so.
