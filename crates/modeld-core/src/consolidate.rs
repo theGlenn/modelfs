@@ -1,16 +1,16 @@
 //! Safe duplicate consolidation: replace byte-identical files with APFS clones.
 //!
-//! Protocol per replacement (see DECISIONS.md, "Conservative dedupe protocol"):
+//! Protocol per replacement (see DECISIONS.md, "Replacing a duplicate"):
 //!
 //! 1. Fully hash the canonical file; require the expected digest.
 //! 2. Snapshot the victim's stat (size, mtime, mode, inode, link count); refuse
 //!    hard-linked or recently written files.
 //! 3. Fully hash the victim; require the same digest; re-stat to detect writes
 //!    that raced the hash.
-//! 4. Clone canonical to a temp name in the victim's directory, re-stat once more,
-//!    then atomically swap temp and victim (`renamex_np` + `RENAME_SWAP`).
-//! 5. Verify the temporary clone, atomically swap, then verify that the original
-//!    inode under the temp name did not race the swap.
+//! 4. Clone canonical to a temp name in the victim's directory, verify the clone,
+//!    then re-check the victim for writers and stat changes.
+//! 5. Atomically swap temp and victim (`renamex_np` + `RENAME_SWAP`), then verify
+//!    that the original inode under the temp name did not race the swap.
 //! 6. Durably journal the replacement, restore the victim's original mode and
 //!    mtime (providers key caches on mtime), then release the old bytes.
 //!

@@ -1,244 +1,337 @@
-# Decisions
+# Design decisions
 
-Dated log of load-bearing choices. Newest last.
+How ModelFS works, and why it works that way. The [README](README.md) covers
+using it; this document covers the reasoning a contributor or a careful user
+needs: what ModelFS guarantees, which trade-offs it makes, and what is not
+built yet.
 
-## 2026-08-13 — Language: Rust
+When a change alters a choice described here, update this document in the
+same PR. The dated log this document replaced is in the git history.
 
-Covers the whole roadmap: syscall-level filesystem work (clonefile, renamex_np), mmap
-GGUF parsing, later FUSE (`fuser`) and daemon. Single static binary. Edition 2024.
+## Principles
 
-## 2026-08-13 — Platform: macOS/APFS first, Linux second
+Every choice below follows from four rules, in priority order:
 
-Local-AI usage concentrates on Apple Silicon (MLX is macOS-only). Storage backend goes
-behind a trait so Linux reflink (`FICLONE` on btrfs/XFS) and hardlink fallback slot in
-later.
+1. **Never lose or corrupt a file.** When ModelFS is unsure, it skips. A missed
+   saving costs disk space; a wrong replacement costs someone's data.
+2. **Apps keep their paths.** ModelFS never moves a file an app owns or turns
+   it into a symlink. A duplicate is replaced at the same path by a clone with
+   the same bytes, permissions, and modification time.
+3. **Everything is undoable.** Every replacement is journaled, and
+   `modeld restore` rebuilds independent copies.
+4. **Trust only hashes ModelFS computed itself.** Filenames and metadata that
+   claim a digest save work; they never decide what gets replaced.
 
-## 2026-08-13 — Dedupe mechanism: APFS clonefile, not hardlink
+## Why APFS clones
 
-`clonefile(2)` shares extents (same disk savings) but keeps independent inodes:
-a provider mutating its copy triggers copy-on-write instead of corrupting every view.
-Hardlink remains an opt-in flag later.
+`clonefile(2)` creates a new file that shares the original's disk blocks. Both
+files keep their own inode, so when an app rewrites its copy, APFS copies the
+changed blocks (copy-on-write) and every other copy stays intact. A hardlink
+gives the same saving, but it is one inode under two names: an app that
+rewrites its file in place would silently change every other app's copy.
 
-Measured on this machine (44 MB Ollama blob, `/System/Volumes/Data`):
-clone cost **0 blocks**, full copy cost 89 800 × 512 B blocks. Atomic
-clone-to-temp + `rename` preserves content hash.
+Measured on a 44 MB Ollama blob: a clone cost 0 blocks, and a full copy cost
+89 800 blocks of 512 B.
 
-Consequence: savings accounting can't trust `du` (clones report full logical size).
-Measure via allocated-blocks delta / container free space.
+Consequences:
 
-## 2026-08-13 — Digest: SHA-256 first-class, algorithm-independent abstraction
+- **Savings are invisible to `du` and Finder**, which count each clone at full
+  size. The real saving shows up as free space on the volume (`df`).
+- **Clones only work within one volume.** A model file on a different volume
+  from `~/.modeld` is skipped.
+- **macOS first.** Local-AI work concentrates on Apple Silicon, and MLX is
+  macOS-only. Linux can follow with `FICLONE` reflinks on btrfs or XFS. Today
+  the APFS calls live directly in `modeld-core/src/apfs.rs`; a storage trait
+  comes with the second backend.
 
-SHA-256 is the ecosystem interop digest: Ollama blob filenames ARE sha256; HF LFS blob
-names ARE sha256. Harvest identity from names, verify lazily. The `Digest` type carries
-an explicit algorithm tag (`sha256:<hex>` rendering) so blake3 or chunk-level schemes
-can join without schema breakage. HF 40-hex names are git-SHA-1 — parseable, never
-trusted as content identity.
+## When two files are the same
 
-## 2026-08-13 — Xet is a distinct provider architecture
+**Identity is the SHA-256 of the full contents.** SHA-256 is what the
+ecosystem already uses: Ollama and Hugging Face LFS name their blobs by it.
+The `Digest` type carries its algorithm (`sha256:<hex>`), so a faster hash or
+a chunk-level scheme can be added without changing the schema.
 
-`~/.cache/huggingface/xet` is a chunk-level transfer cache (shards + chunks), not model
-storage. Excluded from scan, never modified. See `providers/xet.md`.
+**A name only claims a digest.** Two files can claim the same hash, and a
+Hugging Face 40-hex name is a git SHA-1 that never matches the SHA-256 of an
+identical copy. Harvested names only save work: a file whose size nothing else
+shares cannot have a duplicate, so `scan` and `dedupe` do not hash it. Files
+with colliding sizes are hashed, and only digests ModelFS computed itself form
+duplicate groups. `sync` verifies every file before importing it.
 
-## 2026-08-13 — Conservative dedupe protocol
+**Hashes are cached by file stamp.** A stamp is the inode, size, and
+nanosecond mtime and ctime. A file whose stamp still matches is not re-read;
+this covers provider files and the store's own blobs. The stamp leaves out the
+device number on purpose: macOS reassigns APFS `st_dev` at every boot, which
+used to invalidate the whole cache after a restart (the first daemon pass took
+9 minutes instead of under a second). Stamps are always compared for the same
+path, so the device adds nothing. The `device` columns remain in the schema,
+written as 0.
 
-No mtime-only heuristics. Per replacement:
+The cache cannot catch corruption that leaves the stamp unchanged, such as bit
+rot on disk. That needs a separate check (see [Not built yet](#not-built-yet)).
 
-1. Fully hash canonical A and target B; require byte-identical digests.
-2. Snapshot B's `stat` (inode, size, mtime); check no open write fds (`lsof`).
-3. `clonefile` A → `B.modeld-tmp-<pid>` in B's directory (same volume guaranteed).
-4. Re-`stat` B; any change (inode/size/mtime) aborts.
-5. Fully hash the temporary clone, then atomically swap with
-   `renamex_np(tmp, B, RENAME_SWAP)` — B's original bytes survive under the temp name.
-6. Re-check the original inode under the temp name for racing writers/metadata changes;
-   roll back on any change.
-7. Durably journal the swap before releasing the rollback file, then restore B's
-   original mtime where providers key caches on it (LM Studio).
-8. `modeld restore` replays the journal with the same writer and stat checks.
+**What a model file says about itself is for display only.** `modeld-formats`
+reads GGUF metadata (name, architecture, quantization, size label) and the
+safetensors JSON header (dominant dtype, parameter count). The parsers read
+headers only, so their cost does not depend on model size. Every length field
+is checked against a cap before allocating, so a corrupt file gives an error,
+never a panic or an unbounded read. The facts are recorded once per artifact
+and shown by `ls`; they never influence deduplication.
 
-Files with `.incomplete`/`.part`/`-partial` markers or active writers are never touched.
+## Finding model files
 
-## 2026-08-26 — Semantics: header facts are display-only, read once per artifact
+| Source | Scanned | Left alone |
+|---|---|---|
+| Ollama | `blobs/`, labeled from `manifests/` | partial downloads (`-partial` names) |
+| Hugging Face | `models--*/blobs/`, labeled from `snapshots/` | `.incomplete` downloads, datasets, spaces, the Xet chunk cache |
+| LM Studio | `models/` | `.internal/` (app state and staging downloads), `hub/` |
+| Your folders | `[scan] roots` globs in `~/.modeld/config.toml` | files not recognized as GGUF or safetensors |
 
-`modeld-formats` parses what a weights file says about itself: GGUF `general.*`
-metadata (name, architecture, `file_type` → llama.cpp quant name, `size_label`)
-and the safetensors JSON prologue (dominant dtype by bytes, parameter count from
-shapes). Parsers read headers only — cost independent of model size — and are
-bounded: every length field is checked against a sanity cap before allocation,
-so corrupt files yield errors, never panics or unbounded reads. GGUF v1 and
-big-endian files are rejected as unsupported.
+The Xet directory is a transfer cache of chunks, not model storage, so it is
+never scanned or modified. Each provider's on-disk layout is documented in
+[`providers/`](providers/).
 
-Facts land in registry columns (`kind`, `name`, `architecture`, `quant`,
-`params`) at sync time, read from the canonical blob after verification. `kind`
-(`model` | `asset`) doubles as the analyzed marker; tokenizers/vocabularies are
-classified by reference filename and listed separately in `ls`. Identity stays
-with digests — semantics are presentation, never trusted for dedupe or storage
-decisions.
+Scanning rules:
 
-Safetensors detection for extensionless blobs (HF cache): a plausible u64 LE
-header length followed by `{` is decisive; ASCII JSON sidecars fail the length
-check by construction.
+- **Files under 1 MiB are ignored** (configs, tokenizer JSON). `--min-size`
+  changes the threshold.
+- **Symlinks inside model folders are skipped**: they already share storage
+  with their target.
+- **Overlapping roots count each file once.** Config globs are resolved to
+  real paths, and when two roots reach the same file, the first one keeps it.
+  Hardlinks stay separate artifacts.
+- **A scan never fails.** Anything unreadable becomes a *skip* with a reason,
+  because a live machine has files being downloaded, moved, and deleted while
+  it is scanned.
+- **A broken config file makes the scan incomplete.** The roots it defines are
+  unknown, so nothing they own may be treated as gone (see
+  [References and pruning](#references-and-pruning)).
 
-## 2026-08-26 — gc: unreferenced blobs are deletable, with two guards
+## The store
 
-`modeld gc` deletes store blobs that no provider path references. References are
-only pruned by a *complete* sync, so zero references is a settled fact, not a
-transient one. Two guards keep a blob regardless:
+`~/.modeld` holds:
 
-1. Its digest appears in a journaled swap — `restore` rebuilds victims from the
-   canonical blob, so gc would break restore.
-2. A `shared_paths` row for it still stat-matches on disk — the blob is the
-   recorded anchor of a live clone even though no scan currently sees it (e.g.
-   a root was removed from the config).
+| Path | What it is |
+|---|---|
+| `blobs/sha256-<hex>` | One canonical copy per digest |
+| `registry.db` | SQLite (WAL): artifacts, references, digest cache, clone records |
+| `journal.jsonl` | Every replacement, enough to undo it |
+| `lock`, `daemon.lock` | The store lock and the one-daemon lock |
+| `config.toml` | Extra scan roots |
+| `bin/modeld`, `daemon.log` | The daemon's own binary and its log |
 
-Deleting a blob never touches clone bytes (copy-on-write): existing copies keep
-their extents. The blob file is removed before its registry rows, so a failed
-delete leaves the artifact intact and retryable. Reported sizes are logical;
-physical reclaim depends on whether other files still share the extents.
+**A blob is a clone of the first file seen with its digest**, so importing
+costs no disk space. The blob is hashed again after cloning. Afterwards every
+duplicate becomes a clone of the blob, so the store keeps a copy even when
+the app that first downloaded a model deletes it.
 
-## 2026-09-22 — Daemon: settle-gated reconcile passes under a store lock
+**Imports are atomic in the registry.** The artifact row and the record that
+the source file shares the blob are written in one transaction. The source is
+recorded as sharing only if its stamp still equals the one it was hashed at:
+a file rewritten mid-import is never mistaken for a clone of the old bytes.
 
-`modeld daemon` runs in the foreground and keeps the store converged. It
-watches every detected scan root with `FSEvents` (via `notify`), plus the store
-directory for `config.toml` edits, and runs *passes*. A pass is one
-`sync` followed by store-anchored consolidation. There is no per-file event
-handling: `FSEvents` coalesces and replays sticky flags (merely hashing a file
-comes back as Create/Modify), so events only say *when* to look, never *what*
-changed. The pass re-derives everything from the filesystem, which makes it
-idempotent. The extra no-op pass right after a busy one is expected and cheap.
+### References and pruning
 
-When a pass runs (earliest wins): 10 s after events go quiet, at most 2 min
-into a steady stream (such as a long download), when a deferred file settles,
-and every 15 min regardless. The periodic pass catches missed events and new
-glob-matched roots. Each pass re-detects roots and re-arms the watches.
+A reference is "this path currently holds this digest", stamped with the sync
+that saw it. `ls` and `where` are built from references, and `gc` deletes blobs
+that have none. So a reference may only be dropped when ModelFS can prove the
+file is gone: stale references are pruned only after a *complete* pass.
 
-Settle rule: files modified within `RECENT_WRITE_WINDOW` (5 min) are deferred.
-They are not imported, and their old references are kept (the pass counts as
-incomplete, so nothing is pruned). Providers stage downloads under partial
-names, but manual folders and LM Studio's unverified staging path do not, and
-a half-written file must never become a blob. `modeld sync` keeps settling off
-because a manual command means "now".
+A pass is incomplete when:
 
-Store-anchored consolidation: after sync, any synced file that the registry
-does not record as sharing its blob's extents becomes a clone of the blob. That
-also covers the single-copy case that `dedupe`'s group planning misses: a
-model re-downloaded after its original was deleted still duplicates the blob.
-The conservative swap protocol above applies unchanged.
+- a file or folder could not be read, or a file changed while being hashed;
+- an import or a registry write failed;
+- the config file could not be read;
+- a file was deferred because it was written in the last 5 minutes.
 
-Store lock: `flock(2)` on `~/.modeld/lock`. Every daemon pass and every
-mutating command (`sync`, `dedupe`, `restore`, `gc`) holds it. The journal is
-rewritten whole on each append, so two unlocked writers could drop an entry and
-make a swap unrestorable. Read-only commands (`ls`, `where`, `scan`, `doctor`)
-never wait.
+Some skips do not count: an Ollama blob whose name is not a finished SHA-256,
+an unparseable Ollama manifest, or a file on another volume. None of these can
+ever hold a reference, so pruning past them loses nothing. Before this rule, a
+single permanent skip disabled pruning forever.
 
-Blob verification is cached: the blob's digest goes into the same stamp-keyed
-digest cache as provider files. A blob is re-hashed only when its stamp
-(inode, size, mtime, ctime) changes. Before this, every sync re-hashed every
-blob, so a daemon pass was as slow as a full store read. Silent media
-corruption that leaves the stamp alone is out of scope here; that is a job for
-a future `doctor --verify`.
+A complete pass with no providers at all still prunes, so apps whose folders
+vanished stop appearing in `ls`.
 
-Shutdown: the first SIGINT/SIGTERM stops the daemon between passes, and a pass
-in flight always finishes, so a swap is never cut off before it is journaled.
-A second signal exits immediately.
+### Clone records
 
-## 2026-09-22 — File stamps ignore device numbers; APFS confirms untracked clones
+When a file becomes a clone of a blob, ModelFS records its path and stamp. A
+file whose stamp still matches is never planned again.
 
-The first live daemon dry run planned to re-clone 20 files (7.8 GB) that
-were already clones. There were two causes.
+Some clones predate these records, or were made by another tool. Before
+replacing a file, ModelFS asks APFS whether it already shares the blob's
+blocks: `fcntl(F_LOG2PHYS_EXT)` maps 16 evenly spaced offsets of both files to
+physical addresses on the same device. Matching files are recorded (adopted)
+instead of replaced, which avoids re-hashing gigabytes to free nothing. The
+check is sampled, so a clone that diverged only between samples counts as
+shared. That can only cost savings, never correctness. On the first live run,
+8 of the 10 remaining candidates turned out to be clones already.
 
-1. **macOS reassigns APFS `st_dev` at boot.** `FileStamp` included the device
-   number, so after every restart the digest cache, the blob verification
-   cache, and every recorded clone all missed. Each sync re-hashed everything:
-   that was the slow-sync watch-item, and the first daemon pass took 9 minutes.
-   Stamps are always compared for the same path, so inode + size + nanosecond
-   mtime/ctime is enough. The `device` columns stay in the schema, written as 0
-   and never matched. Warm pass time went from 9 min to under 1 s.
-2. **Imports older than `shared_paths` had no clone record.** A blob cloned
-   *from* a provider file before the table existed left that file looking like
-   a duplicate. The planner now asks APFS: `fcntl(F_LOG2PHYS_EXT)` maps 16
-   evenly spaced offsets of both files to device offsets, and clones map to the
-   same blocks. A file that already shares its blob is recorded (adopted), not
-   replaced. The check is sampled, so a clone that diverged only between
-   samples still counts as shared; that only costs missed savings, never
-   correctness. Live result: 8 of the 10 remaining candidates were adopted, and
-   the 2 real duplicates left (a 10.1 MB Qwen vocab/merges pair) are true
-   copies.
+### Garbage collection
 
-## 2026-09-23 — PR review hardening
+`modeld gc` deletes blobs that no reference points to, since after complete
+passes zero references is a settled fact. Two guards keep a blob anyway:
 
-- **Harvested digests never group duplicates.** Names are claims: two files
-  can claim the same hash, and an HF git-SHA-1 name never matches the SHA-256
-  of an identical copy. Size-colliding artifacts are hashed unless modeld
-  already verified them, and only verified digests form groups. This refines
-  "harvest identity from names, verify lazily": harvesting still saves work
-  for files with a unique size.
-- **An unreadable config makes the scan incomplete.** A broken
-  `config.toml` used to drop its roots silently, so the next sync pruned
-  every reference they owned. Detection now records the file as unreadable,
-  every scan of that detection counts it as skipped, and nothing is pruned
-  until the config parses again. An empty but complete detection still
-  syncs, so providers whose directories vanished stop showing in `ls`.
-- **Overlapping roots collect each file once.** Nested config roots, or a
-  config root covering a provider cache, used to list a file once per root.
-  The first root wins, keyed on the symlink-resolved path; hardlinks stay
-  separate.
-- **Import revalidates its source.** The stamp at which a file was hashed is
-  carried through import. If the file changed afterwards, it is not recorded
-  as sharing the blob and its reference is not recorded under the old digest.
-- **Header parsing cannot overflow.** Safetensors shape and byte totals use
-  checked arithmetic; an absurd shape makes the header malformed instead of
-  panicking.
+1. **A journaled swap uses it.** `restore` rebuilds files from the canonical
+   blob, so deleting it would break undo.
+2. **A recorded clone of it still matches on disk.** The blob anchors a live
+   clone that no scan currently sees, for example after a folder was removed
+   from the config.
 
-## 2026-09-23 — Start at login: a launchd agent running an installed copy
+Deleting a blob never touches the bytes of its clones (copy-on-write). The
+blob file goes first and its registry rows after, in one transaction, so a
+failed delete leaves the artifact intact and retryable. Reported sizes are
+logical; the actual space freed depends on whether other files still share
+the blocks.
+
+### Concurrency
+
+Every command that changes files, blobs, the registry, or the journal holds
+the store lock (`flock(2)` on `~/.modeld/lock`): `sync`, `dedupe`, `restore`,
+`gc`, and each daemon pass. The journal is rewritten whole on every append, so
+two unlocked writers could drop an entry and leave a swap impossible to undo.
+
+Read-only commands (`ls`, `where`, `scan`, `doctor`) do not take the lock.
+SQLite runs in WAL mode with a 5-second busy timeout, so a read waits out a
+write transaction instead of failing.
+
+## Replacing a duplicate
+
+No heuristics based on mtime alone. For each file to replace (the *victim*)
+and its canonical blob:
+
+1. **Hash the canonical file** and require the expected digest.
+2. **Snapshot the victim's stat**: size, mtime, mode, inode, link count.
+   Refuse files written in the last 5 minutes (they may still be downloading)
+   and files with more than one hard link (cloning one name would free
+   nothing, since the old bytes live on under the other name).
+3. **Check for open writers** with `lsof`, hash the victim, require the same
+   digest, and re-stat: any change aborts.
+4. **Clone the canonical file** to `.<name>.modeld-tmp-<pid>` in the victim's
+   directory, which guarantees the same volume. Hash the clone, check writers
+   and stat again.
+5. **Swap atomically** with `renamex_np(RENAME_SWAP)`. The victim's original
+   bytes now sit under the temp name, which makes rollback instant. Check the
+   original inode once more; if anything raced the swap, swap back.
+6. **Journal durably** (temp file, `fsync`, rename, directory `fsync`). If the
+   journal write fails, swap back.
+7. **Restore the victim's permissions and mtime** with nanosecond precision
+   (LM Studio keys its metadata cache on millisecond mtimes), then delete the
+   temp file. Deleting it is what frees the space.
+
+`modeld restore` runs the same checks in reverse. It writes an independent
+copy by reading and writing the bytes, because `std::fs::copy` would clone on
+APFS and recreate the sharing that restore exists to undo. Entries whose file changed
+since the replacement are left in place and kept in the journal.
+
+Commands print only between steps, never in the middle of one. When their
+output goes to a pipe whose reader has quit (`modeld ls | head -1`), they end
+quietly, like other Unix tools, instead of panicking.
+
+## The daemon
+
+`modeld daemon` keeps the store converged. It watches every scan root with
+`FSEvents` (through `notify`), plus the store directory for `config.toml`
+edits, and runs *passes*: a sync followed by store-anchored consolidation.
+
+**Events only say when to look.** `FSEvents` coalesces events and replays
+sticky flags: merely hashing a file comes back as a modification. So a pass
+re-derives everything from the filesystem, which makes it idempotent. The extra no-op pass after a busy one is expected and cheap.
+
+**When a pass runs**, whichever comes first: 10 seconds after events go quiet,
+2 minutes into a steady stream of events (such as a long download), when a
+deferred file settles, and every 15 minutes regardless. The periodic pass
+catches missed events and folders newly matched by a config glob. Each pass
+re-detects roots and re-arms the watches.
+
+**Settling.** Files written in the last 5 minutes are deferred: not imported,
+and their old references are kept. Ollama and Hugging Face download under
+partial names, but your own folders need not, and a half-written file must
+never become a blob. `modeld sync` does not wait, because a manual command
+means "now".
+
+**Store-anchored consolidation.** After syncing, every file the registry does
+not record as sharing its blob becomes a clone of it. This also covers a
+case `dedupe` misses: a model re-downloaded after its original was deleted is
+a single file, yet still duplicates the blob.
+
+**Stopping.** The first SIGINT or SIGTERM stops the daemon between passes. A
+pass in flight always finishes, so a swap is never cut off before it is
+journaled; a pass still waiting for the store lock is abandoned. A second
+signal exits immediately. A log line that cannot be written is dropped rather
+than stopping a pass.
+
+**One daemon per store.** A daemon holds `~/.modeld/daemon.lock` for its whole
+lifetime. A second one, such as a terminal run while the login agent is up,
+logs once and waits to take over. Exiting instead would make launchd restart
+it in a loop.
+
+### Starting at login
 
 `modeld daemon install` writes a per-user launchd agent
-(`~/Library/LaunchAgents/dev.modeld.daemon.plist`, label `dev.modeld.daemon`)
-and loads it with `launchctl bootstrap gui/<uid>`. It stops any running agent
-first, so re-running `install` is also how an update is applied. Choices:
+(`~/Library/LaunchAgents/dev.modeld.daemon.plist`) and loads it into
+`gui/<uid>`. It stops any running agent first, so running `install` again is
+also how an update is applied.
 
-- **Stable binary path.** The running binary is copied to
-  `~/.modeld/bin/modeld`, and the agent runs that copy. Build directories get
-  deleted or rebuilt (Conductor workspaces are disposable). The copy goes
-  through a temp file and a rename, so replacing a binary that is running is
-  safe.
-- **Explicit environment.** launchd does not inherit the shell's environment,
-  so `HOME`, plus `HF_HOME` / `HF_HUB_CACHE` / `OLLAMA_MODELS` when they are
-  set at install time, are written into the plist. Without them the agent
-  would watch different folders than the CLI.
-- **Restart only on failure.** `KeepAlive.SuccessfulExit = false`: a crash
-  or watcher failure restarts the agent, but a clean SIGTERM stop does not.
-  `ProcessType = Background` gives it throttled CPU and I/O, so hashing a
-  new download never competes with foreground work. `ExitTimeOut = 120 s`
-  lets a pass that is mid-hash finish and journal before launchd resorts to
-  SIGKILL.
-- **One daemon per store.** A daemon holds `~/.modeld/daemon.lock` for its
-  whole lifetime. A second one, such as a terminal run while the agent is up,
-  logs once and waits to take over instead of duplicating passes. Exiting
-  instead would make launchd restart it in a loop.
-- `uninstall` stops the agent and removes the plist; the installed binary and
-  `~/.modeld/daemon.log` stay. The log is not rotated yet.
+- **The agent runs a copy of the binary** at `~/.modeld/bin/modeld`. Build
+  directories get deleted or rebuilt, and Homebrew removes old versions. The
+  copy goes through a temp file and a rename, so replacing a running binary is
+  safe. It also means that after upgrading, you run `modeld daemon install`
+  again.
+- **The environment is written into the plist.** launchd does not inherit the
+  shell's environment, so `HOME`, and `HF_HOME`, `HF_HUB_CACHE`, and
+  `OLLAMA_MODELS` when set, are captured at install time. Without them the
+  agent would watch different folders than the CLI.
+- **Restart only on failure.** A crash or watcher failure restarts the agent;
+  a clean stop does not. It runs as a background process with throttled CPU
+  and I/O, so hashing a new download never competes with foreground work. It
+  gets 120 seconds after SIGTERM to finish a pass before launchd kills it.
+- `uninstall` stops the agent and removes the plist. The installed binary and
+  the log stay.
 
-## 2026-09-26 — Distribution: universal binary on GitHub Releases, personal Homebrew tap
+## Building and shipping
 
-Pushing a `v*` tag runs `.github/workflows/release.yml`. It checks that the tag
-matches the `modeld-cli` version, runs the tests, builds `aarch64` and
-`x86_64` binaries, and merges them with `lipo` into one universal `modeld`. The
-tarball goes on a GitHub release with its SHA-256. Choices:
+**Rust**, edition 2024, one binary with no runtime dependencies: SQLite is
+bundled, and it links only macOS system frameworks. `rust-toolchain.toml`
+pins the compiler, and CI runs clippy with warnings as errors, so a new lint
+on stable Rust cannot break the build unrelated to any change. CI runs on
+macOS because the tests make real APFS clones.
 
-- **Prebuilt binary, not a from-source formula.** A source formula would make
-  every user install Rust and compile for minutes. The binary links only macOS
-  system frameworks (SQLite is bundled), and the linker's ad-hoc signature is
-  enough: Homebrew downloads do not get the quarantine flag.
-- **Personal tap (`theGlenn/homebrew-tap`), not homebrew-core.** Core wants
-  source builds and a track record. `brew install theGlenn/tap/modelfs` is a
-  fully qualified name, so Homebrew's tap trust (default since 6.0) trusts it
-  without a separate `brew trust`.
-- **Formula bumped by the release job.** It rewrites the formula's `url` and
-  `sha256` using a fine-grained `HOMEBREW_TAP_TOKEN` scoped to the tap. With
-  no token set, the job warns and the formula is updated by hand.
-- **Pinned toolchain.** `rust-toolchain.toml` pins 1.95.0, and CI runs clippy
-  with `-D warnings`. A floating `stable` would break CI whenever a new clippy
-  lint shipped, unrelated to any change.
-- **Upgrades need `modeld daemon install` again.** The launchd agent runs its
-  own copy of the binary (see the entry above), so `brew upgrade` alone
-  leaves the daemon on the old version. The formula's caveats say so.
+**Releases come from tags.** Pushing `v<version>` checks that the tag matches
+the crate version, runs the tests, builds Apple Silicon and Intel binaries,
+merges them into one universal `modeld` with `lipo`, and publishes the
+tarball and its SHA-256 as a GitHub release.
+
+**Homebrew installs the prebuilt binary** from a personal tap
+(`theGlenn/homebrew-tap`). A from-source formula would make every user install
+Rust and compile for minutes, and homebrew-core requires source builds and a
+track record. The linker's ad-hoc signature is enough, because Homebrew
+downloads are not quarantined. `brew install theGlenn/tap/modelfs` names the
+formula in full, which satisfies Homebrew's tap trust without a separate
+`brew trust`. The release job updates the formula's URL and checksum through
+a token scoped to the tap; without the token it warns, and the formula is
+updated by hand.
+
+## Not built yet
+
+- **Linux**, through reflinks, and the storage trait that comes with it.
+- **An opt-in hardlink mode** for filesystems without clones.
+- **`doctor --verify`**, re-hashing blobs to catch corruption the stamp cache
+  cannot see.
+- **Log rotation** for `~/.modeld/daemon.log`.
+- **Per-project drop-in files**, a `.modeld` file marking a folder for
+  scanning. Config globs cover the folder layouts seen so far.
+- **A FUSE view** (`fuser`) was part of the original plan; nothing depends on
+  it yet.
+
+Known gaps:
+
+- **Stalled partial downloads outside Ollama and Hugging Face.** Your own
+  folders and LM Studio's `models/` are recognized by file format, not name,
+  so a download stuck for over 5 minutes under a name like `model.gguf.part`
+  is imported as its own artifact.
+  It never matches a complete file, so it is never swapped, and `gc` removes
+  its blob once the file is gone.
+- **A crash between steps 5 and 6 of a replacement** leaves the original bytes
+  under the temp name, outside the journal. Nothing is lost, but the space may
+  stay used and `restore` does not know about it.
+- **The Intel half of the universal binary** is built but not yet tested in CI.

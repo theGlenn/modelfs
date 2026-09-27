@@ -11,8 +11,8 @@
 //! ```
 //!
 //! Matched directories become [`ProviderKind::Manual`] roots: scanned, synced, and
-//! deduplicated like any provider cache. A future `.modeld` drop-in file per project
-//! will supplement this (see DECISIONS.md).
+//! deduplicated like any provider cache. A per-project `.modeld` drop-in file may
+//! supplement this later (see DECISIONS.md, "Not built yet").
 
 use crate::ProviderRoot;
 use modeld_core::ProviderKind;
