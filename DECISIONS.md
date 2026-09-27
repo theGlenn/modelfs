@@ -51,15 +51,15 @@ ecosystem already uses: Ollama and Hugging Face LFS name their blobs by it.
 The `Digest` type carries its algorithm (`sha256:<hex>`), so a faster hash or
 a chunk-level scheme can be added without changing the schema.
 
-A filename can claim a digest without proving it. Two files can claim the same hash, and a
-Hugging Face 40-hex name is a git SHA-1 that never matches the SHA-256 of an
+A filename can claim a digest without proving it. Two files can claim the same
+hash, and a Hugging Face 40-hex name is a git SHA-1 that never matches the SHA-256 of an
 identical copy. Harvested names only save work: a file whose size nothing else
 shares cannot have a duplicate, so `scan` and `dedupe` do not hash it. Files
 with colliding sizes are hashed, and only digests ModelFS computed itself form
 duplicate groups. `sync` verifies every file before importing it.
 
-Hashes are cached by file stamp: the inode, size, and
-nanosecond mtime and ctime. A file whose stamp still matches is not re-read;
+Hashes are cached by file stamp: the inode, size, and nanosecond mtime and ctime.
+A file whose stamp still matches is not re-read;
 this covers provider files and the store's own blobs. The stamp leaves out the
 device number on purpose: macOS reassigns APFS `st_dev` at every boot, which
 used to invalidate the whole cache after a restart (the first daemon pass took
@@ -71,8 +71,8 @@ The cache cannot catch corruption that leaves the stamp unchanged, such as bit
 rot on disk. That needs a separate check (see [Not built yet](#not-built-yet)).
 
 Model metadata is for display only. `modeld-formats` reads GGUF metadata
-(name, architecture, quantization, size label) and the
-safetensors JSON header (dominant dtype, parameter count). The parsers read
+(name, architecture, quantization, size label) and the safetensors JSON header
+(dominant dtype, parameter count). The parsers read
 headers only, so their cost does not depend on model size. Every length field
 is checked against a cap before allocating, so a corrupt file gives an error,
 never a panic or an unbounded read. The facts are recorded once per artifact
@@ -121,8 +121,8 @@ Scanning rules:
 | `bin/modeld`, `daemon.log` | The daemon's own binary and its log |
 
 A blob is a clone of the first file seen with its digest, so importing
-does not duplicate its data blocks. The blob is hashed again after cloning. Afterwards every
-duplicate becomes a clone of the blob, so the store keeps a copy even when
+does not duplicate its data blocks. The blob is hashed again after cloning.
+Later replacements clone from the blob, so the store keeps a copy even when
 the app that first downloaded a model deletes it.
 
 Imports are atomic in the registry. The artifact row and the record that
@@ -177,9 +177,8 @@ shared. A missed difference leaves the file untouched; it only costs savings.
 Deleting a blob never touches the bytes of its clones (copy-on-write). The
 blob file is deleted first, then its registry rows are removed in one database
 transaction. A failed file deletion leaves the registry intact for a retry.
-Reported sizes are
-logical; the actual space freed depends on whether other files still share
-the blocks.
+Reported sizes are logical; the actual space freed depends on whether other
+files still share the blocks.
 
 ### Concurrency
 
@@ -223,14 +222,14 @@ for concurrent writes before and after swapping the copy into place. Files
 whose contents changed since replacement are left untouched, and their entries
 stay in the journal.
 
-Commands do not print during a replacement. When their
-output goes to a pipe whose reader has quit (`modeld ls | head -1`), they end
+Commands do not print during a replacement. When their output goes to a pipe
+whose reader has quit (`modeld ls | head -1`), they end
 quietly, like other Unix tools, instead of panicking.
 
 ## The daemon
 
-`modeld daemon` keeps the store in sync with model folders. It watches every scan root with
-`FSEvents` (through `notify`), plus the store directory for `config.toml`
+`modeld daemon` keeps the store in sync with model folders. It watches every
+scan root with `FSEvents` (through `notify`), plus the store directory for `config.toml`
 edits, and runs *passes*: a sync followed by store-anchored consolidation.
 
 **Events only say when to look.** `FSEvents` coalesces events and replays
@@ -252,8 +251,7 @@ importing a half-written file; it cannot prove a download has finished.
 
 **Store-anchored consolidation.** After syncing, files not known to share their
 blob's blocks are considered for replacement, subject to the safety checks
-above. This also covers a
-case `dedupe` misses: a model re-downloaded after its original was deleted is
+above. This also covers a case `dedupe` misses: a model re-downloaded after its original was deleted is
 a single file, yet still duplicates the blob.
 
 **Stopping.** The first SIGINT or SIGTERM stops the daemon between passes. A
@@ -285,8 +283,8 @@ also how an update is applied.
   agent would watch different folders than the CLI.
 - **Restart only on failure.** A crash or watcher failure restarts the agent;
   a clean stop does not. It runs as a background process with throttled CPU
-  and I/O to reduce competition with foreground work. It
-  gets 120 seconds after SIGTERM to finish a pass before launchd kills it.
+  and I/O to reduce competition with foreground work. It gets 120 seconds after
+  SIGTERM to finish a pass before launchd kills it.
 - `uninstall` stops the agent and removes the plist. The installed binary and
   the log stay.
 
