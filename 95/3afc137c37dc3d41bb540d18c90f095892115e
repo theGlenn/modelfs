@@ -1,0 +1,19 @@
+DECISIONS.md
+  s_ca004140c90079::t_9d1bef968173f1 54-55,61-62,74-75,124-125,180-181,225-226,231-232,254,286-287
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "953afc137c37dc3d41bb540d18c90f095892115e",
+  "prompts": {},
+  "sessions": {
+    "s_ca004140c90079": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0db93-d153-71b2-b7b3-35f7c2f5f515",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "Glenn Sonna <kenpachi.os@gmail.com>"
+    }
+  }
+}
