@@ -393,7 +393,7 @@ dependencies = [
 
 [[package]]
 name = "modeld-cli"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "clap",
  "libc",
@@ -408,7 +408,7 @@ dependencies = [
 
 [[package]]
 name = "modeld-core"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "hex",
  "libc",
@@ -421,7 +421,7 @@ dependencies = [
 
 [[package]]
 name = "modeld-formats"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "serde_json",
  "tempfile",
@@ -430,7 +430,7 @@ dependencies = [
 
 [[package]]
 name = "modeld-providers"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "glob",
  "modeld-core",
@@ -443,7 +443,7 @@ dependencies = [
 
 [[package]]
 name = "modeld-store"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "libc",
  "modeld-core",

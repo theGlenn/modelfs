@@ -22,11 +22,14 @@ ModelFS is in early development. See [How it stays safe](#how-it-stays-safe).
 
 ## Install
 
-Requirements:
+With Homebrew, on Apple Silicon or Intel Macs:
 
-- macOS
-- Rust 1.95
-- Git
+```sh
+brew install theGlenn/tap/modelfs
+modeld --version
+```
+
+Or build from source with Rust 1.95 and Git:
 
 ```sh
 git clone https://github.com/theGlenn/modelfs.git
@@ -152,7 +155,8 @@ $ tail ~/.modeld/daemon.log
 `modeld daemon --dry-run` previews replacements. It updates the store and
 registry without changing your apps' files.
 
-After upgrading the CLI, run `modeld daemon install` again to update the daemon.
+After upgrading the CLI (say, with `brew upgrade modelfs`), run
+`modeld daemon install` again to update the daemon.
 
 ## How APFS clones work
 
@@ -199,6 +203,17 @@ cargo test --workspace
 cargo clippy --workspace --all-targets
 cargo fmt --all
 ```
+
+To release, bump `version` in `Cargo.toml`, merge it, then push a matching
+tag from `master`:
+
+```sh
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+The release workflow tests the tag, publishes a universal macOS binary on
+GitHub Releases, and updates the Homebrew formula.
 
 See [`DECISIONS.md`](DECISIONS.md) for design decisions and [`providers/`](providers/)
 for notes on how each app stores its models.

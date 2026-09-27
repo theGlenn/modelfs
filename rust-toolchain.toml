@@ -1,0 +1,4 @@
+# Pinned so CI and release builds match what the code is kept warning-free on.
+[toolchain]
+channel = "1.95.0"
+components = ["clippy", "rustfmt"]
