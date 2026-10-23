@@ -1,0 +1,61 @@
+DECISIONS.md
+  s_007f0b3bec1f2b::t_2f3d68bb4f412d 429-434
+README.md
+  s_007f0b3bec1f2b::t_47b590d967e194 113-114
+app/Sources/ModelFS/Debug/Snapshots.swift
+  s_007f0b3bec1f2b::t_045ccc69c3f5e9 21-25,27-30,33,38,54
+app/Sources/ModelFS/Shared/Components.swift
+  s_007f0b3bec1f2b::t_b746ec4d1a7c0a 100-101
+app/Sources/ModelFS/Window/ModelDetailView.swift
+  s_007f0b3bec1f2b::t_560a32ab61a89e 7-8,22-33
+app/Sources/ModelFS/Window/ModelsView.swift
+  s_007f0b3bec1f2b::t_5e43903ffafdcb 42,74-82
+app/Sources/ModelFS/Window/RemoveSheet.swift
+  s_47a5595adac752::t_c948a21b0f5ca8 1-311
+app/Sources/ModelFSKit/Engine/EngineClient.swift
+  s_007f0b3bec1f2b::t_ad9cb18aa363a3 60-82,96-110
+app/Sources/ModelFSKit/Engine/EngineProcess.swift
+  s_007f0b3bec1f2b::t_a11edaca93e61b 74-76,82,88,187,220
+app/Sources/ModelFSKit/Schema/EngineMessage.swift
+  s_007f0b3bec1f2b::t_c6935d972b00b9 67-68,81-82,110-111
+app/Sources/ModelFSKit/Schema/Removal.swift
+  s_007f0b3bec1f2b::t_795598cc1d8c87 1-169
+app/Sources/ModelFSKit/State/Activity.swift
+  s_007f0b3bec1f2b::t_e65671d35d64f1 9-10,50
+app/Sources/ModelFSKit/State/AppModel.swift
+  s_007f0b3bec1f2b::t_3d5bf46956c5db 218-279,334-346
+app/Sources/ModelFSKit/State/RemovalSummary.swift
+  s_007f0b3bec1f2b::t_33805ef77df8e2 1-98
+app/Tests/ModelFSKitTests/EndToEndTests.swift
+  s_007f0b3bec1f2b::t_801dc329fe7f3d 1,73-115
+app/Tests/ModelFSKitTests/EngineProcessTests.swift
+  s_007f0b3bec1f2b::t_fd15f98e835b70 39-42
+app/Tests/ModelFSKitTests/RemovalTests.swift
+  s_007f0b3bec1f2b::t_591b43fc159385 1-63
+app/Tests/ModelFSKitTests/SchemaFixtureTests.swift
+  s_007f0b3bec1f2b::t_caa070b5bcc03e 14
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "b60ea8b66cba46b3c63a42e1d6d71772023cb856",
+  "prompts": {},
+  "sessions": {
+    "s_007f0b3bec1f2b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a90249b0-2fdc-4586-9f57-295920133f3c",
+        "model": "unknown"
+      },
+      "human_author": "Glenn Sonna <3216616+theGlenn@users.noreply.github.com>"
+    },
+    "s_47a5595adac752": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "01a12845-1c1c-7f80-97e1-d2496b906141",
+        "model": "unknown"
+      },
+      "human_author": "Glenn Sonna <3216616+theGlenn@users.noreply.github.com>"
+    }
+  }
+}
