@@ -1,0 +1,26 @@
+crates/modeld-cli/src/remove/text.rs
+  s_007f0b3bec1f2b::t_25d18438c0f778 50,88-115
+  s_007f0b3bec1f2b::t_ca90df17858819 116-117
+crates/modeld-cli/src/remove/tests.rs
+  s_007f0b3bec1f2b::t_25d18438c0f778 537-557
+  s_007f0b3bec1f2b::t_a30226c5312fde 536
+crates/modeld-cli/src/remove/mod.rs
+  s_007f0b3bec1f2b::t_25d18438c0f778 289-297,307,584-593
+  s_007f0b3bec1f2b::t_e2d58f40f741d9 594-595
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "c8a9bcbea3fc0f704ab99e8c5a6ff08556f250af",
+  "prompts": {},
+  "sessions": {
+    "s_007f0b3bec1f2b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a90249b0-2fdc-4586-9f57-295920133f3c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Glenn Sonna <3216616+theGlenn@users.noreply.github.com>"
+    }
+  }
+}
