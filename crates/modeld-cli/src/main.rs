@@ -135,9 +135,13 @@ fn main() {
             "this command has no JSON output; run it without --json",
         );
     }
-    // JSON output keeps SIGPIPE ignored, so a reader quitting never stops a
-    // pass: see the `json` module.
-    if output == Output::Text && !matches!(command, Command::Daemon { action: None, .. }) {
+    // JSON output, `pass`, and the daemon keep SIGPIPE ignored, so a reader
+    // quitting never stops a pass: see the `json` and `pass` modules.
+    let keeps_running = matches!(
+        command,
+        Command::Pass { .. } | Command::Daemon { action: None, .. }
+    );
+    if output == Output::Text && !keeps_running {
         end_quietly_on_closed_pipe();
     }
     match command {

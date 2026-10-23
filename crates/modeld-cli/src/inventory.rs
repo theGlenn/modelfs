@@ -13,9 +13,10 @@
 //! between two references, or a clone that diverged between the sampled
 //! offsets, is not seen.
 //!
-//! Reading the inventory is read-only: nothing is recorded, hashed, or
-//! adopted. A file found sharing the blob's blocks without a clone record
-//! is reported as a clone; the next pass records it.
+//! Reading the inventory hashes nothing and records nothing: a file found
+//! sharing the blob's blocks without a clone record is reported as a clone,
+//! and the next pass records it. (Opening the store creates it on first use,
+//! as every command does.)
 
 use crate::report;
 use modeld_core::{Digest, FileId};
@@ -35,6 +36,9 @@ use std::path::{Path, PathBuf};
 pub enum ReferenceState {
     /// The path no longer exists; the next complete sync drops it.
     Missing,
+    /// The path could not be checked (say, macOS denied access to its
+    /// folder). It is counted as present, with its own copy.
+    Unreadable,
     /// An APFS clone of the stored copy: it shares the stored blocks.
     Clone,
     /// Other names share this file's inode, or it is the stored copy
@@ -42,6 +46,9 @@ pub enum ReferenceState {
     Hardlinked,
     /// The file changed since modeld hashed it, so its bytes are unknown.
     Changed,
+    /// An independent copy on another volume than the store: clones cannot
+    /// cross volumes, so no pass can share it.
+    OtherVolume,
     /// An independent copy of the stored bytes; a pass can clone it.
     Copy,
 }
@@ -178,8 +185,10 @@ fn locate(
     stored: &StoredCopy,
     path: &Path,
 ) -> (ReferenceState, Option<FileId>) {
-    let Ok(metadata) = std::fs::symlink_metadata(path) else {
-        return (ReferenceState::Missing, None);
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if is_gone(&error) => return (ReferenceState::Missing, None),
+        Err(_) => return (ReferenceState::Unreadable, None),
     };
     let id = Some(file_id(&metadata));
     if !metadata.is_file() {
@@ -200,6 +209,9 @@ fn locate(
     if !verified {
         return (ReferenceState::Changed, id);
     }
+    if stored.id.is_some_and(|blob| blob.device != metadata.dev()) {
+        return (ReferenceState::OtherVolume, id);
+    }
     let shares_blob = stored.id.is_some()
         && modeld_core::apfs::shares_extents(path, &stored.path).unwrap_or(false);
     if shares_blob {
@@ -210,48 +222,50 @@ fn locate(
 
 /// Disk usage of one stored artifact of `size` bytes.
 ///
-/// The stored copy, its clones, and any path hard-linked to either form one
-/// physical copy. Every other present path holds its own, counted once per
-/// inode. Only independent copies are pending: a hard-linked file is never
-/// replaced, and a changed one may no longer match.
+/// Counts files, not names: hard links to one inode are one file. The
+/// stored copy, its clones, and any file hard-linked to either share one
+/// set of blocks. Every other present file holds its own, and so does each
+/// unreadable path, whose inode is unknown. Only independent copies on the
+/// store's volume are pending: a hard-linked file is never replaced, and a
+/// changed one may no longer match.
 fn space(size: u64, blob: Option<FileId>, copies: &[(ReferenceState, Option<FileId>)]) -> Space {
-    let is_anchored = |state: ReferenceState, id: Option<FileId>| {
-        state == ReferenceState::Clone || (blob.is_some() && id == blob)
-    };
-    let present = count(
-        copies
-            .iter()
-            .filter(|(state, _)| *state != ReferenceState::Missing),
-    );
-    let anchored = count(copies.iter().filter(|(state, id)| is_anchored(*state, *id)));
-    let anchored_ids: HashSet<FileId> = copies
-        .iter()
-        .filter(|(state, id)| is_anchored(*state, *id))
-        .filter_map(|(_, id)| *id)
-        .chain(blob)
-        .collect();
-    let independent: HashSet<FileId> = copies
+    let present: Vec<&(ReferenceState, Option<FileId>)> = copies
         .iter()
         .filter(|(state, _)| *state != ReferenceState::Missing)
-        .filter_map(|(_, id)| *id)
-        .filter(|id| !anchored_ids.contains(id))
         .collect();
+    let anchored: HashSet<FileId> = present
+        .iter()
+        .filter(|(state, id)| *state == ReferenceState::Clone || (blob.is_some() && *id == blob))
+        .filter_map(|(_, id)| *id)
+        .collect();
+    let shared_blocks: HashSet<FileId> = anchored.iter().copied().chain(blob).collect();
+    let files: HashSet<FileId> = present.iter().filter_map(|(_, id)| *id).collect();
+    let unidentified = count(present.iter().filter(|(_, id)| id.is_none()));
+    let independent = count(files.difference(&shared_blocks)) + unidentified;
     let pending = count(
-        copies
+        present
             .iter()
             .filter(|(state, _)| *state == ReferenceState::Copy),
     );
     Space {
-        on_disk: size * (u64::from(!anchored_ids.is_empty()) + count(independent.iter())),
-        saved: size * anchored.saturating_sub(1),
+        on_disk: size * (u64::from(!shared_blocks.is_empty()) + independent),
+        saved: size * count(anchored.iter()).saturating_sub(1),
         pending: size * pending,
-        store_only: if present == 0 && blob.is_some() {
+        store_only: if present.is_empty() && blob.is_some() {
             size
         } else {
             0
         },
-        logical: size * present,
+        logical: size * (count(files.iter()) + unidentified),
     }
+}
+
+/// Whether a stat error means the path is gone, not just unreadable.
+fn is_gone(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+    )
 }
 
 fn count<T>(items: impl Iterator<Item = T>) -> u64 {
@@ -423,6 +437,44 @@ mod tests {
         let space = space(SIZE, BLOB, &copies);
 
         assert_eq!(space.on_disk, 3 * SIZE);
+        assert_eq!(space.logical, 2 * SIZE);
+        assert_eq!(space.saved, 0);
+        assert_eq!(space.pending, 0);
+    }
+
+    #[test]
+    fn names_hard_linked_to_one_clone_save_nothing() {
+        let copies = [at(ReferenceState::Clone, 20), at(ReferenceState::Clone, 20)];
+
+        let space = space(SIZE, BLOB, &copies);
+
+        assert_eq!(space.saved, 0);
+        assert_eq!(space.logical, SIZE);
+        assert_eq!(space.on_disk, SIZE);
+    }
+
+    #[test]
+    fn copy_on_another_volume_is_never_pending() {
+        let copies = [
+            at(ReferenceState::Clone, 10),
+            at(ReferenceState::OtherVolume, 11),
+        ];
+
+        let space = space(SIZE, BLOB, &copies);
+
+        assert_eq!(space.pending, 0);
+        assert_eq!(space.on_disk, 2 * SIZE);
+    }
+
+    #[test]
+    fn unreadable_path_counts_as_a_present_copy() {
+        let copies = [(ReferenceState::Unreadable, None)];
+
+        let space = space(SIZE, BLOB, &copies);
+
+        assert_eq!(space.store_only, 0);
+        assert_eq!(space.logical, SIZE);
+        assert_eq!(space.on_disk, 2 * SIZE);
         assert_eq!(space.pending, 0);
     }
 
@@ -504,6 +556,61 @@ mod tests {
             state_set(&fixture),
             [ReferenceState::Clone, ReferenceState::Hardlinked]
         );
+    }
+
+    #[test]
+    fn copy_on_another_device_than_the_blob_is_other_volume() {
+        let fixture = Fixture::new();
+        fixture.settled_model("a.gguf", b"weights");
+        fixture.settled_model("b.gguf", b"weights");
+        fixture.sync(Duration::ZERO);
+        let inventory = Inventory::read(&fixture.store, &Detection::default()).expect("inventory");
+        let model = &inventory.models[0];
+        let copy = model
+            .references
+            .iter()
+            .find(|located| located.state == ReferenceState::Copy)
+            .expect("one independent copy");
+        let blob = model.stored.id.expect("blob");
+        let elsewhere = StoredCopy {
+            path: model.stored.path.clone(),
+            id: Some(FileId {
+                device: blob.device + 1,
+                ..blob
+            }),
+        };
+
+        let (state, _) = locate(
+            &fixture.store,
+            &model.artifact.digest,
+            &elsewhere,
+            &copy.reference.path,
+        );
+
+        assert_eq!(state, ReferenceState::OtherVolume);
+    }
+
+    #[test]
+    fn path_in_a_folder_without_access_is_unreadable_not_missing() {
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = Fixture::new();
+        let locked = fixture.root.root.join("locked");
+        std::fs::create_dir(&locked).expect("mkdir");
+        let model = locked.join("a.gguf");
+        std::fs::write(&model, b"weights").expect("write model");
+        let old = std::time::SystemTime::now() - Duration::from_hours(1);
+        std::fs::File::open(&model)
+            .and_then(|file| file.set_times(std::fs::FileTimes::new().set_modified(old)))
+            .expect("backdate");
+        fixture.sync(Duration::ZERO);
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000))
+            .expect("lock folder");
+
+        let found = states(&fixture);
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755))
+            .expect("unlock folder");
+
+        assert_eq!(found, [(model, ReferenceState::Unreadable)]);
     }
 
     #[test]

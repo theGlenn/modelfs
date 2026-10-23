@@ -7,12 +7,18 @@
 //!
 //! The first SIGINT or SIGTERM stops a pass still waiting for the store
 //! lock; once it holds the lock (the `locked` event) the pass runs to the
-//! end, so no swap is cut short. A second signal exits at once.
+//! end, so no swap is cut short. A second signal exits at once, as in the
+//! daemon: it is the escape hatch, and the Mac app never sends one.
+//!
+//! `pass` keeps `SIGPIPE` ignored in text mode too, and drops write errors:
+//! printing progress between swaps must not end the pass before it records
+//! the clones it made.
 
 use crate::Output;
-use crate::json::{self, ErrorCode};
+use crate::json::{self, ErrorCode, EventWriter};
 use crate::reconcile::{self, PassEvent, PassOptions};
 use crate::report::human_bytes;
+use std::io::Write;
 use std::path::Path;
 
 /// Runs one pass against the store at `store_root`; exits 1 on failure.
@@ -26,17 +32,22 @@ pub fn run(store_root: &Path, options: PassOptions, output: Output) {
         ),
     };
     let detection = modeld_providers::detect_all();
+    let events = EventWriter::start();
     let on_event = |event: PassEvent<'_>| match output {
-        Output::Json => json::emit_event(event.into()),
+        Output::Json => events.send(event.into()),
         Output::Text => print_event(event),
     };
-    match reconcile::run(store_root, &detection, options, &stop, on_event) {
+    let outcome = reconcile::run(store_root, &detection, options, &stop, on_event);
+    // The pass released the store lock; from here, writes may block.
+    events.finish();
+    match outcome {
         Ok(Some(report)) if output == Output::Json => {
             json::emit_result(json::Pass::new(&report, options.dry_run));
         }
         Ok(Some(report)) => {
+            let mut stdout = std::io::stdout().lock();
             for line in crate::daemon::describe(&report) {
-                println!("{line}");
+                let _ = writeln!(stdout, "{line}");
             }
         }
         Ok(None) => crate::fail(
@@ -54,16 +65,18 @@ pub fn run(store_root: &Path, options: PassOptions, output: Output) {
 
 /// Text-mode progress on stderr, like `sync` and `dedupe` print it.
 fn print_event(event: PassEvent<'_>) {
-    match event {
-        PassEvent::WaitingForLock => {
-            eprintln!("waiting for another modeld process (daemon pass?) to finish…");
-        }
-        PassEvent::Locked => {}
+    let mut stderr = std::io::stderr();
+    let _ = match event {
+        PassEvent::WaitingForLock => writeln!(
+            stderr,
+            "waiting for another modeld process (daemon pass?) to finish…"
+        ),
+        PassEvent::Locked => Ok(()),
         PassEvent::Hashing { path, size } => {
-            eprintln!("hashing {} ({})", path.display(), human_bytes(size));
+            writeln!(stderr, "hashing {} ({})", path.display(), human_bytes(size))
         }
         PassEvent::Cloning { path, size } => {
-            eprintln!("cloning {} ({})", path.display(), human_bytes(size));
+            writeln!(stderr, "cloning {} ({})", path.display(), human_bytes(size))
         }
-    }
+    };
 }

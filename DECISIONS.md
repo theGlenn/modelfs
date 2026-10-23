@@ -310,18 +310,24 @@ and keeps running.
 - **Only what the app runs.** `doctor`, `ls`, `pass`, and `daemon install`,
   `uninstall`, and `status` have JSON output. Other commands refuse `--json`.
   Text output is unchanged.
-- **A reader that quits never stops a pass.** With `--json`, `SIGPIPE` stays
-  ignored and write errors are dropped, as in the daemon's log. One SIGINT
-  stops a pass only while it waits for the store lock, before its `locked`
-  event. After that, the pass finishes and journals every swap.
+- **A reader that quits never stops a pass.** With `--json` (and for every
+  `pass`), `SIGPIPE` stays ignored and write errors are dropped, as in the
+  daemon's log. Events go through a bounded queue on their own thread, so a
+  reader that stops reading cannot stall a pass that holds the store lock.
+  One SIGINT stops a pass only while it waits for the lock, before its
+  `locked` event. After that, the pass finishes and journals every swap; a
+  second signal still exits at once, as for the daemon.
 - **`pass` is a daemon pass on demand**, with the same 5-minute settle window.
   `pass --dry-run` fills the store without changing any app's files.
 - **Totals come from each copy's state.** `ls --json` checks every referenced
-  path on disk: `missing`, `clone` (shares the stored copy's blocks),
-  `hardlinked`, `changed` (rewritten since it was hashed), or `copy` (an
-  independent copy a pass can clone). Only clones count as saved; copies
-  count as pending. The text `ls` footer still subtracts physical from logical
-  size, which counts every reference as shared before any clone exists.
+  path on disk: `missing`, `unreadable`, `clone` (shares the stored copy's
+  blocks), `hardlinked`, `changed` (rewritten since it was hashed),
+  `other_volume`, or `copy` (an independent copy a pass can clone). Only
+  clones count as saved, and only copies on the store's volume as pending.
+  Hard links count once. A path macOS will not let modeld check is
+  `unreadable`, never `missing`: "missing" would claim the file is gone. The
+  text `ls` footer still subtracts physical from logical size, which counts
+  every reference as shared before any clone exists.
 - **Viewers watch one file.** `sync`, `dedupe`, `restore`, `gc`, and every
   pass rewrite `~/.modeld/generation` through a temp file and a rename.
   Watching the registry would loop: SQLite creates and deletes

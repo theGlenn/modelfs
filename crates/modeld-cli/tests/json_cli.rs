@@ -33,8 +33,12 @@ impl Home {
 
     /// Writes a model file backdated past the five-minute settle window.
     fn settled_model(&self, name: &str) -> PathBuf {
+        self.settled_model_of(name, WEIGHTS)
+    }
+
+    fn settled_model_of(&self, name: &str, content: &[u8]) -> PathBuf {
         let path = self.dir.path().join("models").join(name);
-        std::fs::write(&path, WEIGHTS).expect("write model");
+        std::fs::write(&path, content).expect("write model");
         let old = SystemTime::now() - Duration::from_hours(1);
         std::fs::File::open(&path)
             .and_then(|file| file.set_times(std::fs::FileTimes::new().set_modified(old)))
@@ -255,6 +259,62 @@ fn interrupting_a_pass_that_waits_for_the_lock_cancels_it() {
     assert_eq!(last_line(&rest)["error"]["code"], "cancelled");
     assert_eq!(home.generation(), None, "a cancelled pass changed nothing");
     drop(held);
+}
+
+#[test]
+fn interrupting_a_pass_that_holds_the_lock_lets_it_finish() {
+    let home = Home::new();
+    // Big enough that hashing outlasts the signal's delivery.
+    let weights = vec![7u8; 64 * 1024 * 1024];
+    home.settled_model_of("a.gguf", &weights);
+    home.settled_model_of("b.gguf", &weights);
+    let mut child = home
+        .modeld(&["pass", "--json", "--min-size", "1"])
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn modeld");
+    let mut lines = BufReader::new(child.stdout.take().expect("stdout")).lines();
+
+    let first: Value = serde_json::from_str(&lines.next().expect("a line").expect("read line"))
+        .expect("JSON line");
+    let pid = libc::pid_t::try_from(child.id()).expect("pid fits");
+    // SAFETY: kill has no memory-safety preconditions; `pid` is our child.
+    unsafe { libc::kill(pid, libc::SIGINT) };
+    let rest: Vec<Value> = lines
+        .map(|line| serde_json::from_str(&line.expect("read line")).expect("JSON line"))
+        .collect();
+    let status = child.wait().expect("wait for modeld");
+
+    assert_eq!(first["event"]["kind"], "locked");
+    assert!(status.success(), "{status:?}");
+    let result = &last_line(&rest)["result"];
+    assert_eq!(
+        result["cloned"].as_array().map(Vec::len),
+        Some(1),
+        "{result}"
+    );
+    assert_eq!(home.journal_entries(), 1);
+}
+
+#[test]
+fn text_pass_completes_when_stdout_and_stderr_are_closed() {
+    let home = Home::new();
+    home.settled_model("a.gguf");
+    home.settled_model("b.gguf");
+    let (out_reader, out_writer) = std::io::pipe().expect("create pipe");
+    let (err_reader, err_writer) = std::io::pipe().expect("create pipe");
+    drop((out_reader, err_reader));
+
+    let status = home
+        .modeld(&["pass", "--min-size", "1"])
+        .stdout(Stdio::from(out_writer))
+        .stderr(Stdio::from(err_writer))
+        .status()
+        .expect("run modeld");
+
+    assert_eq!(status.signal(), None, "killed: {status:?}");
+    assert!(status.success());
+    assert_eq!(home.journal_entries(), 1);
 }
 
 #[test]

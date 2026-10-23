@@ -17,6 +17,8 @@
 //! Writing never panics and never stops a command. Write errors are dropped,
 //! and `--json` keeps `SIGPIPE` ignored: if the reader quits (the app was
 //! closed mid-pass), the pass still runs to the end and journals every swap.
+//! Events go through an [`EventWriter`], so a reader that stops reading
+//! without quitting cannot block a pass either.
 
 use crate::inventory::{self, ReferenceState};
 use crate::launchd;
@@ -27,6 +29,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::Path;
+use std::sync::mpsc::SyncSender;
+use std::thread::JoinHandle;
 
 /// Version of the line format; bumped only for incompatible changes.
 pub const SCHEMA_VERSION: u32 = 1;
@@ -38,14 +42,6 @@ pub enum Line<T> {
     Event { schema: u32, event: Event },
     Result { schema: u32, result: T },
     Error { schema: u32, error: Failure },
-}
-
-/// Writes an event line: progress while a command runs.
-pub fn emit_event(event: Event) {
-    write_line(&Line::<()>::Event {
-        schema: SCHEMA_VERSION,
-        event,
-    });
 }
 
 /// Writes the result line: the command's outcome.
@@ -67,15 +63,90 @@ pub fn emit_error(code: ErrorCode, message: impl Into<String>) {
     });
 }
 
-/// Serializes `line` and writes it whole to a locked stdout, ignoring errors.
+/// Serializes `line` and writes it whole to stdout, ignoring errors.
 fn write_line<T: Serialize>(line: &T) {
-    let Ok(mut text) = serde_json::to_string(line) else {
-        return;
-    };
+    if let Some(text) = line_text(line) {
+        write_text(&text);
+    }
+}
+
+/// One serialized line with its newline.
+fn line_text<T: Serialize>(line: &T) -> Option<String> {
+    let mut text = serde_json::to_string(line).ok()?;
     text.push('\n');
+    Some(text)
+}
+
+/// Writes `text` to a locked stdout in one call, ignoring errors.
+fn write_text(text: &str) {
     let mut stdout = std::io::stdout().lock();
     let _ = stdout.write_all(text.as_bytes());
     let _ = stdout.flush();
+}
+
+/// How many event lines may wait for a slow reader before new ones drop.
+const EVENT_BACKLOG: usize = 1024;
+
+/// Writes event lines from a thread of its own, dropping them if the
+/// reader falls far behind.
+///
+/// A pass reports events while it holds the store lock. Written directly,
+/// a reader that stops reading but keeps the pipe open would block the
+/// pass, and with it the daemon and every other mutating command. Events
+/// are only progress, so dropping some is harmless. Result and error lines
+/// are written after the pass has released the lock, so they may block.
+#[derive(Debug)]
+pub struct EventWriter {
+    queue: Option<SyncSender<String>>,
+    writer: Option<JoinHandle<()>>,
+}
+
+impl EventWriter {
+    /// Starts the writer thread; without one, events are written inline.
+    pub fn start() -> Self {
+        let (queue, lines) = std::sync::mpsc::sync_channel::<String>(EVENT_BACKLOG);
+        let writer = std::thread::Builder::new()
+            .name("json-events".to_string())
+            .spawn(move || {
+                for line in lines {
+                    write_text(&line);
+                }
+            });
+        match writer {
+            Ok(writer) => Self {
+                queue: Some(queue),
+                writer: Some(writer),
+            },
+            Err(_) => Self {
+                queue: None,
+                writer: None,
+            },
+        }
+    }
+
+    /// Queues an event line, or drops it when the backlog is full.
+    pub fn send(&self, event: Event) {
+        let Some(text) = line_text(&Line::<()>::Event {
+            schema: SCHEMA_VERSION,
+            event,
+        }) else {
+            return;
+        };
+        match &self.queue {
+            Some(queue) => {
+                let _ = queue.try_send(text);
+            }
+            None => write_text(&text),
+        }
+    }
+
+    /// Waits until every queued event is written, so lines stay in order.
+    pub fn finish(mut self) {
+        self.queue = None;
+        if let Some(writer) = self.writer.take() {
+            let _ = writer.join();
+        }
+    }
 }
 
 /// Why a command failed, for callers to branch on.
@@ -318,7 +389,8 @@ pub struct Pass {
     pub pruned: Option<usize>,
     /// Every model file was read, so stale references could be dropped.
     pub complete: bool,
-    /// Duplicates the pass replaced, or would replace on a dry run.
+    /// Duplicates the pass set out to replace, or would on a dry run;
+    /// `cloned` and `refused` say what happened to each.
     pub planned: Vec<Planned>,
     pub cloned: Vec<String>,
     /// Bytes the clones made free.
@@ -840,6 +912,28 @@ mod tests {
         let rendered = pretty(&sample_error());
         assert_fixture("error.json", &rendered);
         assert_round_trips::<()>(&rendered);
+    }
+
+    #[test]
+    fn daemon_install_fixture_matches_the_format() {
+        let install = DaemonInstall {
+            binary: format!("{HOME}/.modeld/bin/modeld"),
+            plist: format!("{HOME}/Library/LaunchAgents/dev.modeld.daemon.plist"),
+            log: format!("{HOME}/.modeld/daemon.log"),
+            status: sample_status(),
+        };
+        let rendered = pretty(&result(install));
+        assert_fixture("daemon-install.json", &rendered);
+        assert_round_trips::<DaemonInstall>(&rendered);
+    }
+
+    #[test]
+    fn daemon_uninstall_fixture_matches_the_format() {
+        let rendered = pretty(&result(DaemonUninstall {
+            was_installed: true,
+        }));
+        assert_fixture("daemon-uninstall.json", &rendered);
+        assert_round_trips::<DaemonUninstall>(&rendered);
     }
 
     #[test]

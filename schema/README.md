@@ -33,8 +33,14 @@ Exit codes: `0` after a result line, `1` after an error line.
 
 A caller may stop a pass with one SIGINT only before `locked`; the pass then
 ends with the error code `cancelled` and changes nothing. After `locked`, the
-pass ignores a single SIGINT and runs to the end. A caller that stops reading
-(or quits) does not stop the pass: write errors are ignored.
+pass ignores a single SIGINT and runs to the end. Never send a second signal:
+like the daemon, modeld then exits at once, possibly between a swap and its
+journal entry.
+
+A caller that quits does not stop the pass: write errors are ignored. One
+that stops reading without closing the pipe does not stall it either: events
+wait in a bounded queue and are dropped when it is full. The `result` or
+`error` line is written once the pass has released the store lock.
 
 ### Error codes
 
@@ -48,9 +54,11 @@ pass ignores a single SIGINT and runs to the end. A caller that stops reading
 | State | Meaning |
 |---|---|
 | `missing` | The file is gone; the next complete pass forgets it. |
+| `unreadable` | The path could not be checked, for example because macOS denied access to its folder. It counts as a present copy. |
 | `clone` | The file shares the stored copy's blocks. |
 | `hardlinked` | The file has other hard links (or is the stored copy itself). ModelFS never replaces it. |
 | `changed` | The file changed since ModelFS hashed it. |
+| `other_volume` | An independent copy on another volume than the store. Clones cannot cross volumes, so no pass can share it. |
 | `copy` | An independent copy of the stored bytes. A pass can turn it into a clone. |
 
 `space` (per model) and `totals` are in bytes:
@@ -62,6 +70,8 @@ pass ignores a single SIGINT and runs to the end. A caller that stops reading
 | `pending` | What a pass could still free by cloning `copy` files. |
 | `store_only` | Stored copies of models that no app uses anymore. |
 | `logical` | What the apps' copies would occupy without any sharing. |
+
+All five count files, not names: hard links to one file count once.
 
 These are estimates. Finder and `du` count every clone at full size; free
 space on the volume (`df`) is the real measure.
