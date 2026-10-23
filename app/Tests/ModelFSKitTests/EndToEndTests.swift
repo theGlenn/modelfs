@@ -28,7 +28,7 @@ struct EndToEndTests {
         let executable = URL(fileURLWithPath: ProcessInfo.processInfo.environment["MODELD_BIN"] ?? "")
         client = EngineClient(
             executable: executable,
-            environment: EngineEnvironment(home: home.url.path, variables: [:], source: .defaults)
+            environment: EngineEnvironment(home: home.url.path, variables: [:], source: .loginShell)
         )
     }
 

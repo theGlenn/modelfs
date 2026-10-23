@@ -15,11 +15,31 @@ struct FakeEngine {
         log = directory.url.appending(path: "signals.log")
         let body = #"""
         #!/bin/bash
+        fixtures=$(dirname "$FAKE_FIXTURE")
+        case "$1" in
+          ls) tr -d '\n' < "$fixtures/ls.json"; echo; exit 0 ;;
+          doctor) tr -d '\n' < "$fixtures/doctor.json"; echo; exit 0 ;;
+          daemon) tr -d '\n' < "$fixtures/daemon-status.json"; echo; exit 0 ;;
+        esac
         locked='{"type":"event","schema":1,"event":{"kind":"locked"}}'
         waiting='{"type":"event","schema":1,"event":{"kind":"waiting_for_lock"}}'
         cancelled='{"type":"error","schema":1,"error":{"code":"cancelled","message":"stopped while waiting"}}'
         result=$(tail -n 1 "$FAKE_FIXTURE")
         case "$FAKE_MODE" in
+          late)
+            sleep 0.3
+            trap 'echo interrupted >> "$FAKE_LOG"; echo "$cancelled"; exit 1' INT
+            echo "$waiting"
+            while true; do sleep 0.02; done ;;
+          huge)
+            printf '{"type":"event","schema":1,"event":{"kind":"hashing","path":"/m/'
+            head -c 2000000 /dev/zero | tr '\0' 'x'
+            printf '.gguf","size":1}}\n'
+            echo "$result" ;;
+          pass-error)
+            echo "$locked"
+            echo '{"type":"error","schema":1,"error":{"code":"pass_failed","message":"pass failed: disk full"}}'
+            exit 1 ;;
           result) echo "$locked"; echo "$result" ;;
           error) echo '{"type":"error","schema":1,"error":{"code":"store_unavailable","message":"cannot open store"}}'; exit 1 ;;
           crash) echo "thread 'main' panicked" >&2; exit 101 ;;
@@ -49,13 +69,17 @@ struct FakeEngine {
         EngineInvocation(
             executable: script,
             arguments: ["pass", "--json"],
-            environment: [
-                "PATH": "/usr/bin:/bin",
-                "FAKE_MODE": mode,
-                "FAKE_FIXTURE": schemaDirectory.appending(path: "pass.jsonl").path,
-                "FAKE_LOG": log.path,
-            ]
+            environment: environment(mode)
         )
+    }
+
+    func environment(_ mode: String) -> [String: String] {
+        [
+            "PATH": "/usr/bin:/bin",
+            "FAKE_MODE": mode,
+            "FAKE_FIXTURE": schemaDirectory.appending(path: "pass.jsonl").path,
+            "FAKE_LOG": log.path,
+        ]
     }
 
     var signals: String {
@@ -213,6 +237,42 @@ final class EventLog: Sendable {
         #expect(report.cloned.count == 1)
         #expect(heard.all.count == 3001)
         #expect(heard.all.last == .hashing(path: "/m/model-3000.gguf", size: 3000))
+    }
+
+    @Test func cancellingBeforeTheFirstLineWaitsForIt() async throws {
+        let engine = try FakeEngine()
+        let invocation = engine.invocation("late")
+        let run = Task {
+            try await EngineProcess.run(invocation, as: PassReport.self, interruptible: true)
+        }
+
+        run.cancel()
+        let outcome = await run.result
+
+        guard case .failure(let error as EngineError) = outcome, case .failed(let failure) = error else {
+            Issue.record("expected the cancelled failure, got \(outcome)")
+            return
+        }
+        #expect(failure.code == .cancelled)
+        #expect(engine.signals == "interrupted\n")
+    }
+
+    @Test func aMegabyteLineIsReadWhole() async throws {
+        let engine = try FakeEngine()
+        let heard = EventLog()
+
+        let report = try await EngineProcess.run(
+            engine.invocation("huge"),
+            as: PassReport.self,
+            onEvent: heard.record
+        )
+
+        #expect(report.cloned.count == 1)
+        guard case .hashing(let path, _) = heard.all.first else {
+            Issue.record("expected one hashing event, got \(heard.all)")
+            return
+        }
+        #expect(path.count == 2_000_008)
     }
 
     @Test func missingExecutableFailsToLaunch() async {

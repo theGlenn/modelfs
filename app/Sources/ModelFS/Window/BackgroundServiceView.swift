@@ -101,7 +101,7 @@ struct BackgroundServiceView: View {
         let source = switch environment.source {
         case .backgroundService: "the background service's settings"
         case .loginShell: "your login shell"
-        case .defaults: "the defaults"
+        case .unavailable: "nowhere yet: your login shell could not be read"
         }
         if variables.isEmpty {
             return "Folder locations come from \(source); no HF_HOME, HF_HUB_CACHE, or OLLAMA_MODELS is set."

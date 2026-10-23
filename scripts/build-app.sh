@@ -6,7 +6,8 @@
 #   --release     optimized build (default: debug)
 #   --universal   Apple Silicon and Intel in one binary (default: this Mac's)
 #   --sign ID     sign with a Developer ID identity (default: ad-hoc), with
-#                 the hardened runtime and a secure timestamp
+#                 the hardened runtime and a secure timestamp; implies
+#                 --release, since debug builds honor MODELD_BIN
 #
 # The engine sits at ModelFS.app/Contents/MacOS/modeld, so the app always
 # runs the modeld it was built with. Needs Rust (rust-toolchain.toml) and
@@ -21,7 +22,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --release) profile=release ;;
     --universal) universal=true ;;
-    --sign) identity="${2:?--sign needs an identity}"; shift ;;
+    --sign) identity="${2:?--sign needs an identity}"; profile=release; shift ;;
     -h | --help) sed -n '2,14p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
@@ -32,7 +33,9 @@ version=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$root/Cargo.toml" | head -n 1)
 [[ -n $version ]] || { echo "no version in Cargo.toml" >&2; exit 1; }
 
 # 1. The engine.
-cargo_flags=(build --locked -p modeld-cli --manifest-path "$root/Cargo.toml")
+# An explicit target dir: CARGO_TARGET_DIR must not send the build elsewhere
+# while a stale modeld under target/ gets bundled.
+cargo_flags=(build --locked -p modeld-cli --manifest-path "$root/Cargo.toml" --target-dir "$root/target")
 [[ $profile == release ]] && cargo_flags+=(--release)
 engine="$root/dist/engine/modeld"
 mkdir -p "$(dirname "$engine")"

@@ -119,6 +119,24 @@ import Testing
         #expect(environment["EMPTY"] == "")
     }
 
+    @Test func invalidUTF8InOneVariableKeepsTheOthers() throws {
+        var output = Data("\(LoginShell.marker)HF_HOME=/Volumes/hf\u{0}WEIRD=".utf8)
+        output.append(contentsOf: [0xFF, 0xFE, 0x00])
+
+        let environment = try #require(LoginShell.parse(output))
+
+        #expect(environment["HF_HOME"] == "/Volumes/hf")
+    }
+
+    @Test func failedProbeLeavesTheFoldersUnknown() async throws {
+        let home = try TemporaryDirectory()
+
+        let environment = await EngineEnvironment.resolve(home: home.url) { nil }
+
+        #expect(environment.source == .unavailable)
+        #expect(!environment.canChangeFiles)
+    }
+
     @Test func outputWithoutTheMarkerIsRejected() {
         #expect(LoginShell.parse(Data("HF_HOME=/x\u{0}".utf8)) == nil)
     }

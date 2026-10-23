@@ -59,7 +59,9 @@ extension EngineError: LocalizedError {
 /// - **Cancelling sends at most one SIGINT, and only before `locked`.**
 ///   The engine treats one SIGINT as "stop waiting for the lock" and
 ///   ignores it once it holds the lock, so a swap is never cut short. A
-///   second signal would exit at once; it is never sent.
+///   second signal would exit at once; it is never sent. Nor is a signal
+///   sent before the engine's first line: until then its handler may not be
+///   installed, and the default action would kill it.
 public enum EngineProcess {
     /// Runs `invocation` and returns its result line's payload.
     ///
@@ -98,10 +100,21 @@ private final class Child: Sendable {
     private let exit: AsyncStream<Int32>
     private let state = Mutex(Signals())
 
-    /// Whether the engine reported `locked`, and whether SIGINT was sent.
+    /// What the engine reported so far, and what the caller asked.
     private struct Signals {
+        /// The engine wrote a line, so its signal handler is installed.
+        var started = false
         var locked = false
+        /// The caller asked to interrupt before the engine started.
+        var interruptRequested = false
         var interrupted = false
+
+        /// Marks SIGINT as sent if it may be sent now; returns whether.
+        mutating func takeInterrupt() -> Bool {
+            guard started, !locked, !interrupted else { return false }
+            interrupted = true
+            return true
+        }
     }
 
     private init(process: Process, stdout: FileHandle, stderr: FileHandle, exit: AsyncStream<Int32>) {
@@ -140,11 +153,24 @@ private final class Child: Sendable {
     }
 
     /// Sends SIGINT once, unless the engine already said it holds the lock.
+    ///
+    /// Before the engine's first line, the request waits for that line.
     func interruptUnlessLocked() {
         let send = state.withLock { signals in
-            guard !signals.locked, !signals.interrupted else { return false }
-            signals.interrupted = true
-            return true
+            signals.interruptRequested = true
+            return signals.takeInterrupt()
+        }
+        if send {
+            process.interrupt()
+        }
+    }
+
+    /// Records that the engine wrote a line; sends a waiting interrupt.
+    private func noteLine(locked: Bool) {
+        let send = state.withLock { signals in
+            signals.started = true
+            signals.locked = signals.locked || locked
+            return signals.interruptRequested && signals.takeInterrupt()
         }
         if send {
             process.interrupt()
@@ -162,11 +188,14 @@ private final class Child: Sendable {
         var result: Result?
         var failure: EngineError?
         for await line in PipeReader.lines(of: stdout) where !line.isEmpty {
-            switch decode(line, as: Result.self, with: decoder) {
+            let message = decode(line, as: Result.self, with: decoder)
+            if case .success(.event(.locked)) = message {
+                noteLine(locked: true)
+            } else {
+                noteLine(locked: false)
+            }
+            switch message {
             case .success(.event(let event)):
-                if event == .locked {
-                    state.withLock { $0.locked = true }
-                }
                 onEvent(event)
             case .success(.result(let payload)):
                 result = payload
@@ -246,11 +275,14 @@ enum PipeReader {
                 continue
             }
             guard count > 0 else { break }
+            // Only the new bytes can hold a newline: earlier ones were scanned.
+            var search = pending.count
             pending.append(contentsOf: buffer[..<count])
-            var start = pending.startIndex
-            while let newline = pending[start...].firstIndex(of: UInt8(ascii: "\n")) {
+            var start = 0
+            while let newline = pending[search...].firstIndex(of: UInt8(ascii: "\n")) {
                 output.yield(String(decoding: pending[start..<newline], as: UTF8.self))
-                start = pending.index(after: newline)
+                start = newline + 1
+                search = start
             }
             pending.removeSubrange(..<start)
         }

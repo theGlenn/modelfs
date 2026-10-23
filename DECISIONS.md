@@ -349,7 +349,8 @@ about files stays in `modeld`.
   `HF_HOME`, `HF_HUB_CACHE`, and `OLLAMA_MODELS` from the installed agent's
   plist first, otherwise from a login shell (`-l -i`, 5-second limit), and
   passes them, with `HOME` and a fixed `PATH`, to every engine run, including
-  `daemon install`.
+  `daemon install`. If neither can be read, the app still shows the
+  inventory but runs no pass and installs nothing until a retry succeeds.
 - **Each pipe is read on its own thread, to the end.** Foundation's
   `FileHandle.bytes` reads every handle on one shared serial queue: a blocking
   read of stderr kept stdout from being read, and the engine, blocked on a
@@ -364,7 +365,8 @@ about files stays in `modeld`.
 - **Refreshes come from four files.** FSEvents on `~/.modeld` wakes the app
   for `generation`, `daemon.log`, `journal.jsonl`, and `config.toml`;
   requests within 250 ms run once, and requests during a refresh run once
-  more after it.
+  more after it. Refreshes never overlap, so an older one cannot overwrite a
+  newer one, and a change shows as finished only once its results do.
 - **No sandbox.** The app runs `modeld`, which reads app folders anywhere in
   your home folder and runs `launchctl` and `lsof`.
 - **Menu bar first.** The app has no Dock icon until its window opens. The

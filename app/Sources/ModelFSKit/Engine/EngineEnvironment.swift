@@ -25,8 +25,15 @@ public struct EngineEnvironment: Sendable, Equatable {
         case backgroundService
         /// A login shell, as a terminal would see them.
         case loginShell
-        /// Neither was readable; modeld's default folders apply.
-        case defaults
+        /// No service, and the login shell could not be read. The folders
+        /// are unknown: reading is fine, but changing files is not, since a
+        /// pass over the wrong folders prunes references under the right ones.
+        case unavailable
+    }
+
+    /// Whether the folders are known well enough to run a pass.
+    public var canChangeFiles: Bool {
+        source != .unavailable
     }
 
     public var home: String
@@ -62,7 +69,7 @@ public struct EngineEnvironment: Sendable, Equatable {
                 source: .loginShell
             )
         }
-        return EngineEnvironment(home: home.path, variables: [:], source: .defaults)
+        return EngineEnvironment(home: home.path, variables: [:], source: .unavailable)
     }
 
     /// The model-folder variables in the installed service's plist.
@@ -131,6 +138,15 @@ public enum LoginShell {
                 try? await Task.sleep(for: .milliseconds(20))
             }
         }
+        // Output ended; the shell may still linger (a dotfile can close
+        // stdout and keep running). Wait for it under the same deadline.
+        while process.isRunning {
+            if ContinuousClock.now >= deadline {
+                kill(process.processIdentifier, SIGKILL)
+                return nil
+            }
+            try? await Task.sleep(for: .milliseconds(20))
+        }
         process.waitUntilExit()
         guard process.terminationReason == .exit, process.terminationStatus == 0 else {
             return nil
@@ -152,11 +168,12 @@ public enum LoginShell {
     }
 
     /// Parses `env -0` output that follows the marker.
+    ///
+    /// Decoding is lossy, so one variable with invalid UTF-8 cannot make the
+    /// whole environment unreadable.
     static func parse(_ output: Data) -> [String: String]? {
-        guard
-            let text = String(data: output, encoding: .utf8),
-            let start = text.range(of: marker)
-        else {
+        let text = String(decoding: output, as: UTF8.self)
+        guard let start = text.range(of: marker) else {
             return nil
         }
         var environment: [String: String] = [:]

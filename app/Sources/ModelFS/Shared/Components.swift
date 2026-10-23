@@ -161,15 +161,23 @@ struct ServiceLine: View {
 
 /// A warning line for the last problem, if any.
 struct ProblemLine: View {
+    @Environment(AppModel.self) private var model
     let problem: String?
 
     var body: some View {
         if let problem {
-            Label(problem, systemImage: "exclamationmark.triangle.fill")
-                .foregroundStyle(.orange)
-                .font(.callout)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 6) {
+                Label(problem, systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                if model.environment?.canChangeFiles == false {
+                    Button("Retry") { model.retryEnvironment() }
+                        .controlSize(.small)
+                        .disabled(model.activity.isBusy)
+                }
+            }
+            .font(.callout)
         }
     }
 }
