@@ -1,0 +1,28 @@
+crates/modeld-core/src/apfs.rs
+  s_007f0b3bec1f2b::t_793c932dfbbf1e 14-15,94-160,262-286
+  s_007f0b3bec1f2b::t_4241bfe31a6c03 287
+crates/modeld-cli/src/inventory.rs
+  s_007f0b3bec1f2b::t_db97a05d801d60 182,264
+crates/modeld-store/src/lib.rs
+  s_007f0b3bec1f2b::t_c3ec10ae223f09 207-212,530-539,542,546-567,705-715,1107-1146
+  s_007f0b3bec1f2b::t_2dfc73c24007d6 1147
+crates/modeld-providers/src/huggingface.rs
+  s_007f0b3bec1f2b::t_8bf615d6105259 91-154,294-341
+  s_007f0b3bec1f2b::t_bb68301b11c610 342
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "91f661e50200023c113b01c25a69320f50312d98",
+  "prompts": {},
+  "sessions": {
+    "s_007f0b3bec1f2b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a90249b0-2fdc-4586-9f57-295920133f3c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Glenn Sonna <3216616+theGlenn@users.noreply.github.com>"
+    }
+  }
+}
