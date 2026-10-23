@@ -75,6 +75,19 @@ pub fn collect(root: &ProviderRoot, min_size: u64, outcome: &mut ScanOutcome) {
     }
 }
 
+/// The `org/name` repo a hub-cache blob belongs to.
+///
+/// Reads it from the path, `<hub>/models--<org>--<name>/blobs/<etag>`;
+/// `None` for any other layout.
+#[must_use]
+pub fn repo_of_blob(blob: &Path) -> Option<String> {
+    let blobs = blob.parent()?;
+    if blobs.file_name()? != "blobs" {
+        return None;
+    }
+    repo_id_from_cache_dir(blobs.parent()?.file_name()?.to_str()?)
+}
+
 /// Renders a cache dir name like `models--Qwen--Qwen3.5-0.8B` as `Qwen/Qwen3.5-0.8B`.
 fn repo_id_from_cache_dir(dir_name: &str) -> Option<String> {
     let encoded = dir_name.strip_prefix("models--")?;
@@ -200,6 +213,18 @@ mod tests {
             Some("Qwen/Qwen3.5-0.8B")
         );
         assert!(repo_id_from_cache_dir("datasets--meshllm--catalog").is_none());
+    }
+
+    #[test]
+    fn blob_path_names_its_repo() {
+        let blob = Path::new("/hub/models--Qwen--Qwen3.5-0.8B/blobs").join(LFS_HEX);
+
+        assert_eq!(repo_of_blob(&blob).as_deref(), Some("Qwen/Qwen3.5-0.8B"));
+        assert_eq!(
+            repo_of_blob(Path::new("/hub/models--Qwen--X/snapshots/abc/model")),
+            None
+        );
+        assert_eq!(repo_of_blob(Path::new("/elsewhere/blobs/abc")), None);
     }
 
     #[test]

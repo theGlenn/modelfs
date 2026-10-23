@@ -176,7 +176,7 @@ pub fn render_ls(
 }
 
 /// The most human name we have: header name, then any label, then the digest.
-fn display_name(artifact: &modeld_store::StoredArtifact) -> String {
+pub fn display_name(artifact: &modeld_store::StoredArtifact) -> String {
     artifact
         .semantics
         .as_ref()

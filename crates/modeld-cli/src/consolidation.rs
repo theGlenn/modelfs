@@ -42,17 +42,19 @@ pub fn plan_against_store(store: &Store, synced: &[Artifact]) -> Vec<Replacement
 
 /// Performs `replacements` and records each resulting clone in the registry.
 ///
-/// Completed paths are remembered as sharing the blob (so they are never
-/// planned again) and their digests cached (so the next sync does not re-hash
-/// the fresh inode). Bookkeeping failures go to `warn`; the swap itself is
-/// already journaled and restorable.
+/// `before_each` hears each replacement before it starts (between swaps,
+/// never inside one). Completed paths are remembered as sharing the blob (so
+/// they are never planned again) and their digests cached (so the next sync
+/// does not re-hash the fresh inode). Bookkeeping failures go to `warn`; the
+/// swap itself is already journaled and restorable.
 pub fn apply(
     store: &Store,
     journal: &Journal,
     replacements: &[Replacement],
+    before_each: impl FnMut(&Replacement),
     mut warn: impl FnMut(String),
 ) -> Report {
-    let report = modeld_core::consolidate::consolidate(replacements, journal);
+    let report = modeld_core::consolidate::consolidate_with(replacements, journal, before_each);
     for replacement in replacements {
         if !report.completed.contains(&replacement.victim) {
             continue;
@@ -127,7 +129,13 @@ mod tests {
 
         assert_eq!(plan.len(), 1);
         assert_eq!(plan[0].victim, copy);
-        let report = apply(&fixture.store, &journal(&fixture), &plan, |w| panic!("{w}"));
+        let report = apply(
+            &fixture.store,
+            &journal(&fixture),
+            &plan,
+            |_| {},
+            |w| panic!("{w}"),
+        );
         assert_eq!(report.completed, vec![copy.clone()]);
         assert_eq!(journal(&fixture).entries().expect("entries").len(), 1);
         assert_eq!(std::fs::read(&copy).expect("read clone"), b"weights");
@@ -164,7 +172,13 @@ mod tests {
         fixture.sync(Duration::ZERO);
         let copy = fixture.settled_model("b.gguf", b"weights");
         let plan = plan_against_store(&fixture.store, &fixture.sync(Duration::ZERO).synced);
-        apply(&fixture.store, &journal(&fixture), &plan, |w| panic!("{w}"));
+        apply(
+            &fixture.store,
+            &journal(&fixture),
+            &plan,
+            |_| {},
+            |w| panic!("{w}"),
+        );
 
         let mut hashed = Vec::new();
         let report = crate::sync::run(&fixture.store, fixture.scan(), Duration::ZERO, |path, _| {

@@ -402,6 +402,8 @@ dependencies = [
  "modeld-providers",
  "modeld-store",
  "notify",
+ "serde",
+ "serde_json",
  "signal-hook",
  "tempfile",
 ]

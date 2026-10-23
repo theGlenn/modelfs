@@ -118,6 +118,7 @@ Scanning rules:
 | `journal.jsonl` | Every replacement, enough to undo it |
 | `lock`, `daemon.lock` | The store lock and the one-daemon lock |
 | `config.toml` | Extra scan roots |
+| `generation` | A counter every change bumps; viewers watch it |
 | `bin/modeld`, `daemon.log` | The daemon's own binary and its log |
 
 A blob is a clone of the first file seen with its digest, so importing
@@ -184,8 +185,13 @@ files still share the blocks.
 
 Every command that changes files, blobs, the registry, or the journal holds
 the store lock (`flock(2)` on `~/.modeld/lock`): `sync`, `dedupe`, `restore`,
-`gc`, and each daemon pass. The journal is rewritten whole on every append, so
-two unlocked writers could drop an entry and leave a swap impossible to undo.
+`gc`, `pass`, and each daemon pass. The journal is rewritten whole on every
+append, so two unlocked writers could drop an entry and leave a swap
+impossible to undo.
+
+When one of them finishes, it rewrites `~/.modeld/generation` so viewers know
+to refresh (see [Machine-readable output](#machine-readable-output)). The
+daemon ignores events in the store directory, so this write never wakes it.
 
 Read-only commands (`ls`, `where`, `scan`, `doctor`) do not take the lock.
 SQLite runs in WAL mode with a 5-second busy timeout, so a read waits out a
@@ -287,6 +293,39 @@ also how an update is applied.
   SIGTERM to finish a pass before launchd kills it.
 - `uninstall` stops the agent and removes the plist. The installed binary and
   the log stay.
+
+## Machine-readable output
+
+The Mac app runs the `modeld` binary bundled inside it and reads its `--json`
+output, instead of linking the Rust code. The safety checks, the store lock,
+and the journal stay in one place, shared by the CLI, the daemon, and the
+app. Quitting the app cannot cut a swap short: the engine is its own process
+and keeps running.
+
+- **JSON Lines with a version.** Every line has a `type` (`event`, `result`,
+  or `error`) and `schema: 1`. Adding a field keeps the version; removing or
+  changing one bumps it. [`schema/README.md`](schema/README.md) has the rules,
+  and `schema/v1/` has example output that the Rust tests compare against and
+  the app's tests decode.
+- **Only what the app runs.** `doctor`, `ls`, `pass`, and `daemon install`,
+  `uninstall`, and `status` have JSON output. Other commands refuse `--json`.
+  Text output is unchanged.
+- **A reader that quits never stops a pass.** With `--json`, `SIGPIPE` stays
+  ignored and write errors are dropped, as in the daemon's log. One SIGINT
+  stops a pass only while it waits for the store lock, before its `locked`
+  event. After that, the pass finishes and journals every swap.
+- **`pass` is a daemon pass on demand**, with the same 5-minute settle window.
+  `pass --dry-run` fills the store without changing any app's files.
+- **Totals come from each copy's state.** `ls --json` checks every referenced
+  path on disk: `missing`, `clone` (shares the stored copy's blocks),
+  `hardlinked`, `changed` (rewritten since it was hashed), or `copy` (an
+  independent copy a pass can clone). Only clones count as saved; copies
+  count as pending. The text `ls` footer still subtracts physical from logical
+  size, which counts every reference as shared before any clone exists.
+- **Viewers watch one file.** `sync`, `dedupe`, `restore`, `gc`, and every
+  pass rewrite `~/.modeld/generation` through a temp file and a rename.
+  Watching the registry would loop: SQLite creates and deletes
+  `registry.db-wal` on reads too, so each refresh would trigger the next.
 
 ## Building and shipping
 

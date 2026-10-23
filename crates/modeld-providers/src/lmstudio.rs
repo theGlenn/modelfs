@@ -5,7 +5,7 @@
 use crate::ProviderRoot;
 use crate::scan::{ScanOutcome, collect_model_tree};
 use modeld_core::ProviderKind;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[must_use]
 pub fn detect(home: &Path) -> Option<ProviderRoot> {
@@ -19,6 +19,19 @@ pub fn detect(home: &Path) -> Option<ProviderRoot> {
     })
 }
 
+/// The `<publisher>/<repo>` folder under `root` that holds `file`.
+///
+/// LM Studio lists one model per such folder; `None` when `file` is not at
+/// least two folders deep under `root`.
+#[must_use]
+pub fn model_folder(root: &Path, file: &Path) -> Option<PathBuf> {
+    let relative = file.strip_prefix(root).ok()?;
+    let mut parts = relative.iter();
+    let (publisher, repo) = (parts.next()?, parts.next()?);
+    parts.next()?;
+    Some(root.join(publisher).join(repo))
+}
+
 /// Collects model files from the LM Studio models tree.
 pub fn collect(root: &ProviderRoot, min_size: u64, outcome: &mut ScanOutcome) {
     collect_model_tree(root, min_size, outcome);
@@ -28,6 +41,19 @@ pub fn collect(root: &ProviderRoot, min_size: u64, outcome: &mut ScanOutcome) {
 mod tests {
     use super::*;
     use modeld_core::Format;
+
+    #[test]
+    fn model_folder_is_publisher_and_repo() {
+        let root = Path::new("/Users/me/.lmstudio/models");
+        let file = root.join("lmstudio-community/Qwen3-GGUF/Qwen3-Q4_K_M.gguf");
+
+        assert_eq!(
+            model_folder(root, &file),
+            Some(root.join("lmstudio-community/Qwen3-GGUF"))
+        );
+        assert_eq!(model_folder(root, &root.join("loose.gguf")), None);
+        assert_eq!(model_folder(root, Path::new("/elsewhere/a/b/c.gguf")), None);
+    }
 
     #[test]
     fn collects_model_files_and_ignores_sidecars_and_small_files() {

@@ -108,11 +108,15 @@ Use `modeld <command> --help` for options.
 | `dedupe [--dry-run]` | Replaces duplicates with APFS clones | yes, undoable |
 | `restore` | Rebuilds independent copies | yes |
 | `gc [--dry-run]` | Deletes unused stored copies | store only |
+| `pass [--dry-run]` | Runs one daemon pass now: imports settled downloads, then replaces duplicates | yes, undoable; store only with `--dry-run` |
 | `daemon [--dry-run]` | Runs automatic deduplication in the foreground | yes, undoable; store only with `--dry-run` |
 | `daemon install` / `uninstall` / `status` | Manages the background daemon | — |
 
-`scan`, `sync`, `dedupe`, and `daemon` scan files of at least 1 MiB by default.
-Use `--min-size <bytes>` to change this.
+`scan`, `sync`, `dedupe`, `pass`, and `daemon` scan files of at least 1 MiB by
+default. Use `--min-size <bytes>` to change this.
+
+`doctor`, `ls`, `pass`, and the `daemon` subcommands accept `--json` for
+machine-readable output (JSON Lines). See [`schema/`](schema/README.md).
 
 ## What gets scanned
 

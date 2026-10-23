@@ -19,6 +19,8 @@ modeld-store.workspace = true
 clap.workspace = true
 libc.workspace = true
 notify.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 signal-hook.workspace = true
 
 [dev-dependencies]
