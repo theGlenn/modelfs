@@ -36,6 +36,10 @@ struct FakeEngine {
             head -c 2000000 /dev/zero | tr '\0' 'x'
             printf '.gguf","size":1}}\n'
             echo "$result" ;;
+          rm-changed)
+            tr -d '\n' < "$fixtures/rm-plan.json" | sed 's/"status": *"planned"/"status":"plan_changed"/'
+            echo
+            exit 3 ;;
           pass-error)
             echo "$locked"
             echo '{"type":"error","schema":1,"error":{"code":"pass_failed","message":"pass failed: disk full"}}'

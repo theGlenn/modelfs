@@ -11,6 +11,7 @@ import Testing
             names == [
                 "daemon-install.json", "daemon-status.json", "daemon-uninstall.json",
                 "doctor.json", "error.json", "ls.json", "pass.jsonl",
+                "rm-plan.json", "rm-removed.json",
             ]
         )
     }

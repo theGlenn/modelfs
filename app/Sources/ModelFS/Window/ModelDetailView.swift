@@ -4,6 +4,8 @@ import SwiftUI
 
 /// One model: what it is, where every copy is, and how much they share.
 struct ModelDetailView: View {
+    @Environment(AppModel.self) private var app
+    @State private var removing = false
     let model: Model
 
     var body: some View {
@@ -16,6 +18,18 @@ struct ModelDetailView: View {
             }
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .safeAreaInset(edge: .bottom) {
+            HStack {
+                Spacer()
+                Button("Remove…", role: .destructive) { removing = true }
+                    .disabled(app.activity.isBusy)
+            }
+            .padding(12)
+            .background(.bar)
+        }
+        .sheet(isPresented: $removing) {
+            RemoveSheet(target: model)
         }
     }
 

@@ -97,6 +97,8 @@ struct ActivityLine: View {
             busy("Turning on the background service…")
         case .removingService:
             busy("Turning off the background service…")
+        case .removing(let name):
+            busy("Removing \(name)…")
         }
     }
 

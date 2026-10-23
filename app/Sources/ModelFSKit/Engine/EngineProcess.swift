@@ -71,17 +71,21 @@ public enum EngineProcess {
     /// reports, which is the `cancelled` failure or, if the pass already
     /// held the lock, its full result.
     ///
+    /// `acceptedStatuses` lists the exit codes that come with a result line
+    /// worth returning; `rm` exits 1 or 3 after one too.
+    ///
     /// - Throws: ``EngineError``.
     public static func run<Result: Decodable & Sendable>(
         _ invocation: EngineInvocation,
         as _: Result.Type = Result.self,
         interruptible: Bool = false,
+        acceptedStatuses: Set<Int32> = [0],
         onEvent: @escaping @Sendable (PassEvent) -> Void = { _ in }
     ) async throws(EngineError) -> Result {
         let child = try Child.launch(invocation)
         let outcome = await withTaskCancellationHandler {
             await Task.detached {
-                await child.collect(Result.self, onEvent: onEvent)
+                await child.collect(Result.self, accepting: acceptedStatuses, onEvent: onEvent)
             }.value
         } onCancel: {
             if interruptible {
@@ -180,6 +184,7 @@ private final class Child: Sendable {
     /// Reads stdout to the end, then waits for the process to exit.
     func collect<Result: Decodable & Sendable>(
         _: Result.Type,
+        accepting statuses: Set<Int32>,
         onEvent: @Sendable (PassEvent) -> Void
     ) async -> Swift.Result<Result, EngineError> {
         let stderrLines = PipeReader.lines(of: stderr)
@@ -212,7 +217,7 @@ private final class Child: Sendable {
             status = code
         }
         let tail = await stderrTail.value
-        if let result, status == 0 {
+        if let result, statuses.contains(status) {
             return .success(result)
         }
         return .failure(failure ?? .noResult(status: status, stderr: tail))

@@ -6,6 +6,8 @@ public enum Activity: Sendable, Equatable {
     case pass(PassProgress)
     case installingService
     case removingService
+    /// Removing a model; it cannot be cancelled once started.
+    case removing(name: String)
 
     public var isBusy: Bool {
         self != .idle
@@ -45,7 +47,7 @@ public struct PassProgress: Sendable, Equatable {
         switch event {
         case .waitingForLock where canCancel:
             step = .waitingForLock
-        case .waitingForLock, .unknown:
+        case .waitingForLock, .unknown, .removing:
             break
         case .locked:
             step = .running

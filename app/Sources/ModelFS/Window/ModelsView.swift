@@ -39,6 +39,7 @@ struct ModelsView: View {
     @State private var filter = ModelFilter.all
     @State private var sortOrder = [KeyPathComparator(\Model.size, order: .reverse)]
     @State private var selection: Model.ID?
+    @State private var removing: Model?
 
     init(selection: Model.ID? = nil) {
         _selection = State(initialValue: selection)
@@ -69,6 +70,15 @@ struct ModelsView: View {
                 Badge(text: row.status.label, tint: row.status.tint)
             }
             .width(min: 90, ideal: 120)
+        }
+        .contextMenu(forSelectionType: Model.ID.self) { ids in
+            if let id = ids.first, let row = model.inventory?.models.first(where: { $0.id == id }) {
+                Button("Remove…", role: .destructive) { removing = row }
+                    .disabled(model.activity.isBusy)
+            }
+        }
+        .sheet(item: $removing) { row in
+            RemoveSheet(target: row)
         }
         .searchable(text: $search, prompt: "Name, repo, tag, or path")
         .toolbar {

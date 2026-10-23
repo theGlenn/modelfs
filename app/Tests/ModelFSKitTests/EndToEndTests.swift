@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Testing
 @testable import ModelFSKit
@@ -67,6 +68,49 @@ struct EndToEndTests {
         #expect(model.lastPass?.cloned.count == 1)
         #expect(model.totals.saved == UInt64(Self.modelSize))
         #expect(model.totals.pending == 0)
+    }
+
+    @Test @MainActor func appModelRemovesAHuggingFaceModelEverywhere() async throws {
+        let weights = Data(repeating: 9, count: Self.modelSize)
+        let hex = SHA256.hash(data: weights).map { String(format: "%02x", $0) }.joined()
+        let repo = home.url.appending(path: ".cache/huggingface/hub/models--org--tiny")
+        let blob = repo.appending(path: "blobs/\(hex)")
+        let snapshot = repo.appending(path: "snapshots/abc")
+        try FileManager.default.createDirectory(at: blob.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
+        try weights.write(to: blob)
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -3600)], ofItemAtPath: blob.path)
+        try FileManager.default.createSymbolicLink(at: snapshot.appending(path: "model.gguf"), withDestinationURL: blob)
+        let client = client
+        let model = AppModel(
+            home: home.url,
+            locateEngine: { client.executable },
+            resolveEnvironment: { _ in client.environment }
+        )
+        await model.start()
+        model.runPass(dryRun: true)
+        try await waitUntilIdle(model)
+        let target = try #require(model.inventory?.models.first { $0.providers == [.huggingface] })
+
+        let options = await model.removalOptions(for: target)
+        let option = try #require(options.first)
+        guard case .success(let planned) = option.plan else {
+            Issue.record("no plan: \(option.plan)")
+            return
+        }
+        let outcome = await model.remove(target, scope: option.scope, plan: planned.plan)
+
+        #expect(options.count == 1, "one app holds it, so one option")
+        #expect(planned.plan.removesEverything)
+        #expect(planned.plan.refusals.isEmpty)
+        guard case .success(let removed) = outcome else {
+            Issue.record("removal failed: \(String(describing: outcome))")
+            return
+        }
+        #expect(removed.status == .removed)
+        #expect(!FileManager.default.fileExists(atPath: repo.path))
+        #expect(model.inventory?.models.contains { $0.digest == target.digest } == false)
+        #expect(model.activity == .idle)
     }
 
     @MainActor

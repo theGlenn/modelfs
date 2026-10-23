@@ -426,6 +426,12 @@ about files stays in `modeld`.
   waiting.
 - **Cancelling is one SIGINT before `locked`, at most.** The app shows Cancel
   only while a pass waits for the store lock and never signals twice.
+- **Removing shows the plan that runs.** The Remove sheet fetches dry-run
+  plans in parallel, one per app holding a copy plus everywhere (one option
+  when a single app holds it), with what each frees, its steps by app, what
+  blocks it with a way to fix it, and notes. Confirming passes the plan's id
+  (`--expect-plan`); if anything changed, nothing is removed and the sheet
+  shows the new plan. A started removal cannot be cancelled.
 - **One change at a time.** A pass, installing, or removing the service is
   owned by the app's model, not by a view, so closing the window never cuts
   one short. Quitting the app leaves a running engine to finish.

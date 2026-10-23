@@ -110,7 +110,8 @@ open dist/ModelFS.app
 
 The app runs its own copy of `modeld` (inside `ModelFS.app/Contents/MacOS`)
 and changes nothing that the CLI would not. Its first scan only adds models
-to the store; **Deduplicate now** runs one `modeld pass`.
+to the store; **Deduplicate now** runs one `modeld pass`; **Remove…** shows
+what `modeld rm` would do for each app, and runs exactly that plan.
 
 ## CLI reference
 

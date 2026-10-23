@@ -215,6 +215,68 @@ public final class AppModel {
         return false
     }
 
+    // MARK: Removing
+
+    /// The ways to remove `model`, each with its dry-run plan.
+    ///
+    /// One per app holding a copy, plus everywhere; a model only one app
+    /// holds has a single option, since removing its last copy removes the
+    /// stored copy too. Plans are fetched in parallel.
+    public func removalOptions(for model: Model) async -> [RemovalOption] {
+        guard let client else { return [] }
+        let scopes: [RemovalScope] = model.providers.count > 1
+            ? model.providers.map(RemovalScope.app) + [.everywhere]
+            : [.everywhere]
+        let digest = model.digest
+        return await withTaskGroup(of: (Int, RemovalOption).self) { group in
+            for (index, scope) in scopes.enumerated() {
+                group.addTask {
+                    let plan = await Self.attempt { () async throws(EngineError) in
+                        try await client.planRemoval(digest: digest, scope: scope)
+                    }
+                    return (index, RemovalOption(scope: scope, plan: plan))
+                }
+            }
+            var options: [(Int, RemovalOption)] = []
+            for await option in group {
+                options.append(option)
+            }
+            return options.sorted { $0.0 < $1.0 }.map(\.1)
+        }
+    }
+
+    /// Runs the removal `plan` describes, exactly as planned.
+    ///
+    /// Returns `nil` when another change is running or the folders are
+    /// unknown; otherwise the engine's result, after the refresh it caused.
+    /// A result with `.planChanged` carries the new plan to show instead.
+    public func remove(
+        _ model: Model,
+        scope: RemovalScope,
+        plan: RemovalPlan
+    ) async -> Result<RemovalResult, EngineError>? {
+        guard mutation == nil, let client else { return nil }
+        guard refuseUnlessFoldersKnown() else { return nil }
+        activity = .removing(name: model.name)
+        actionProblem = nil
+        let digest = model.digest
+        let planID = plan.planID
+        let removal = Task {
+            let result = await Self.attempt { () async throws(EngineError) in
+                try await client.remove(digest: digest, scope: scope, expecting: planID)
+            }
+            if case .failure(let error) = result {
+                actionProblem = error.localizedDescription
+            }
+            await reload()
+            activity = .idle
+            mutation = nil
+            return result
+        }
+        mutation = Task { _ = await removal.value }
+        return await removal.value
+    }
+
     private func advance(with event: PassEvent) {
         guard case .pass(var progress) = activity else { return }
         progress.apply(event)
@@ -268,4 +330,17 @@ public final class AppModel {
             return .failure(error)
         }
     }
+}
+
+/// One way to remove a model, with its dry-run plan.
+public struct RemovalOption: Sendable, Identifiable {
+    public var scope: RemovalScope
+    public var plan: Result<RemovalResult, EngineError>
+
+    public init(scope: RemovalScope, plan: Result<RemovalResult, EngineError>) {
+        self.scope = scope
+        self.plan = plan
+    }
+
+    public var id: RemovalScope { scope }
 }

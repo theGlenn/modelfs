@@ -64,6 +64,8 @@ public struct EngineFailure: Decodable, Sendable, Equatable {
         case installFailed = "install_failed"
         case uninstallFailed = "uninstall_failed"
         case unsupported
+        case confirmationRequired = "confirmation_required"
+        case removeFailed = "remove_failed"
         case unknown
     }
 }
@@ -76,6 +78,8 @@ public enum PassEvent: Sendable, Equatable {
     case locked
     case hashing(path: String, size: UInt64)
     case cloning(path: String, size: UInt64)
+    /// `rm`: a step is about to run on this path.
+    case removing(path: String)
     /// An event kind a newer engine added.
     case unknown(kind: String)
 }
@@ -103,6 +107,8 @@ extension PassEvent: Decodable {
                 path: try container.decode(String.self, forKey: .path),
                 size: try container.decode(UInt64.self, forKey: .size)
             )
+        case "removing":
+            self = .removing(path: try container.decode(String.self, forKey: .path))
         default:
             self = .unknown(kind: kind)
         }
