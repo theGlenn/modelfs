@@ -1,0 +1,68 @@
+crates/modeld-store/src/lib.rs
+  s_007f0b3bec1f2b::t_c3ec10ae223f09 207-212,530-539,542,546-570,708-718,1110-1146,1148
+  s_007f0b3bec1f2b::t_2dfc73c24007d6 1147
+  s_007f0b3bec1f2b::t_629ebcc5f17757 1149-1153
+crates/modeld-cli/src/inventory.rs
+  s_007f0b3bec1f2b::t_db97a05d801d60 182,264
+  s_007f0b3bec1f2b::t_e0c5df29d2ece0 22,271-280
+crates/modeld-providers/src/huggingface.rs
+  s_007f0b3bec1f2b::t_8bf615d6105259 91-154,294-341
+  s_007f0b3bec1f2b::t_bb68301b11c610 342
+crates/modeld-core/src/apfs.rs
+  s_007f0b3bec1f2b::t_793c932dfbbf1e 14-15,94-160,262-286
+  s_007f0b3bec1f2b::t_4241bfe31a6c03 287
+Cargo.lock
+  s_007f0b3bec1f2b::t_7eead44f4870a9 399,408,411
+DECISIONS.md
+  s_007f0b3bec1f2b::t_d7379e3336715e 16-20,176-177,301-363,377-379
+README.md
+  s_007f0b3bec1f2b::t_c94848f209c46a 129,137-154
+crates/modeld-cli/Cargo.toml
+  s_007f0b3bec1f2b::t_5a51cc122869a0 20,25,27
+crates/modeld-cli/src/json.rs
+  s_007f0b3bec1f2b::t_a5e97e7c356b75 169-172,199-202,255,607-814,1147-1252
+crates/modeld-cli/src/main.rs
+  s_007f0b3bec1f2b::t_c2d7715be74d97 21,23,31,82-110,151,170-171,174,204-224
+crates/modeld-cli/src/remove/accounting.rs
+  s_007f0b3bec1f2b::t_4a1a345f9469ec 1-304
+crates/modeld-cli/src/remove/checks.rs
+  s_007f0b3bec1f2b::t_d15c450bd0ea77 1-187
+crates/modeld-cli/src/remove/files.rs
+  s_007f0b3bec1f2b::t_61e8c32a22c269 1-246
+crates/modeld-cli/src/remove/huggingface.rs
+  s_007f0b3bec1f2b::t_315d88ec72e230 1-134
+crates/modeld-cli/src/remove/mod.rs
+  s_007f0b3bec1f2b::t_e8d6885c8aa1a3 1-580
+crates/modeld-cli/src/remove/ollama.rs
+  s_007f0b3bec1f2b::t_00f4b00eaea765 1-570
+crates/modeld-cli/src/remove/tests.rs
+  s_007f0b3bec1f2b::t_ee0a2377965647 1-553
+crates/modeld-cli/src/remove/text.rs
+  s_007f0b3bec1f2b::t_a068bb90c88ef4 1-106
+crates/modeld-cli/src/rm.rs
+  s_007f0b3bec1f2b::t_9b628bb4fa2306 1-299
+crates/modeld-cli/tests/json_cli.rs
+  s_007f0b3bec1f2b::t_1c6692b5cfaa22 353-474
+schema/README.md
+  s_007f0b3bec1f2b::t_a8b697a8f2de4e 5-7,19,23-24,34,50-88
+schema/v1/rm-plan.json
+  s_007f0b3bec1f2b::t_6d02ba7a47b5fd 1-81
+schema/v1/rm-removed.json
+  s_007f0b3bec1f2b::t_d7b6df444abb01 1-82
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "6aaf4d8891607dbd7afc97854f354a70a425321a",
+  "prompts": {},
+  "sessions": {
+    "s_007f0b3bec1f2b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a90249b0-2fdc-4586-9f57-295920133f3c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Glenn Sonna <3216616+theGlenn@users.noreply.github.com>"
+    }
+  }
+}
