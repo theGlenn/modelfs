@@ -1,0 +1,40 @@
+schema/v1/daemon-uninstall.json
+  s_007f0b3bec1f2b::t_1e9c3c0e866a80 1-7
+crates/modeld-cli/tests/json_cli.rs
+  s_007f0b3bec1f2b::t_b660c7f2c81c42 36-39,41,264-290,296-318
+  s_007f0b3bec1f2b::t_3414b429b9ec86 291-295
+  s_007f0b3bec1f2b::t_f55f38e7265924 319
+crates/modeld-cli/src/inventory.rs
+  s_007f0b3bec1f2b::t_5e1fb271ce6130 16-19,39-41,49-51,188-191,212-214,225-230,232,234,236,238,241-244,251-252,254,259,263-270,440-477,561-614
+  s_007f0b3bec1f2b::t_3414b429b9ec86 246
+  s_007f0b3bec1f2b::t_898b37294576e2 615
+crates/modeld-cli/src/pass.rs
+  s_007f0b3bec1f2b::t_1e9c3c0e866a80 10-15,18,21,35,37,40-43,48,50,68-74,76,79,81
+crates/modeld-cli/src/main.rs
+  s_007f0b3bec1f2b::t_1e9c3c0e866a80 138-144
+DECISIONS.md
+  s_007f0b3bec1f2b::t_3414b429b9ec86 313-319,323-330
+schema/README.md
+  s_007f0b3bec1f2b::t_3414b429b9ec86 36-43,57,61,74
+  s_007f0b3bec1f2b::t_db972e36edac15 75
+schema/v1/daemon-install.json
+  s_007f0b3bec1f2b::t_1e9c3c0e866a80 1-32
+crates/modeld-cli/src/json.rs
+  s_007f0b3bec1f2b::t_1e9c3c0e866a80 20-21,32-33,66,68-75,77-81,87-151,392-393,917-938
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "30b1d1b5b1c07386141ce40fa836ab7b370c5665",
+  "prompts": {},
+  "sessions": {
+    "s_007f0b3bec1f2b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a90249b0-2fdc-4586-9f57-295920133f3c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Glenn Sonna <3216616+theGlenn@users.noreply.github.com>"
+    }
+  }
+}
