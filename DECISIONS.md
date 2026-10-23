@@ -13,9 +13,11 @@ Every choice below follows from four rules, in priority order:
 
 1. **Never lose or corrupt a file.** When ModelFS is unsure, it skips. A missed
    saving costs disk space; a wrong replacement costs someone's data.
-2. **Apps keep their paths.** ModelFS never moves a file an app owns or turns
-   it into a symlink. A duplicate is replaced at the same path by a clone with
-   the same bytes, permissions, and modification time.
+2. **Apps keep their paths.** When ModelFS replaces a duplicate, it never
+   moves the file or turns it into a symlink: a clone with the same bytes,
+   permissions, and modification time takes its place. Only removing a model,
+   which you ask for model by model, deletes files or moves them to the
+   Trash (see [Removing a model](#removing-a-model)).
 3. **Replacements must be undoable.** Completed replacements are journaled,
    and `modeld restore` rebuilds independent copies. The crash window before
    journaling is listed under [Known gaps](#known-gaps).
@@ -171,6 +173,8 @@ shared. A missed difference leaves the file untouched; it only costs savings.
 
 1. **A journaled swap uses it.** The blob is kept while a journal entry names
    it, even though `restore` currently copies the file at the replaced path.
+   `rm --everywhere` deletes the blob regardless: restoring a remaining
+   entry still works, because it copies the replaced file itself.
 2. **A recorded clone of it still matches on disk.** The blob anchors a live
    clone that no scan currently sees, for example after a folder was removed
    from the config.
@@ -294,6 +298,69 @@ also how an update is applied.
 - `uninstall` stops the agent and removes the plist. The installed binary and
   the log stay.
 
+## Removing a model
+
+`modeld rm` removes a model from one app (`--path`, `--provider`) or from
+every app and the store (`--everywhere`). Removing the last copy any app has
+also removes the stored copy, since nothing would use it.
+
+**Plan, then run exactly the plan.** A dry run returns the plan: its steps,
+what blocks it (refusals), notes, other files that go with it, and about how
+much space it frees. Its `plan_id` hashes the steps, the refusals, every
+touched file's stamp, the Ollama manifests, the Hugging Face links, and the
+model's references. Running takes the store lock, plans again, and with
+`--expect-plan` refuses to run a plan whose id changed (exit 3). A plan with
+refusals never runs. Steps stop at the first failure, or between steps on
+SIGINT, and the stored copy is always the last step, so a partial failure
+keeps it.
+
+**Every path is checked.** It must be a reference the registry knows, inside
+a folder modeld scans now for that app, a regular file, and still hold the
+model's bytes: a cached digest for its current stamp, or a hash under the
+lock. No process may have it open (`lsof`); a loaded model is mapped into
+memory, and Ollama keeps one mapped while it is loaded.
+
+**Each app's files go the way that app expects.**
+
+| App | How | Why |
+|---|---|---|
+| Ollama | `DELETE /api/delete` for every tag using the blob | Tags share blobs; Ollama deletes the blobs no remaining tag uses, so its manifests and blobs never disagree. |
+| Hugging Face | Unlink snapshot links, then delete the blob | The hub cache is a download cache. Links go first so none dangles; `snapshots/<commit>` and `refs/` stay. |
+| LM Studio | Move the file to the Trash | The folder goes too once no GGUF or safetensors file would remain. `.internal/` is never touched. |
+| Your folders | Move the file to the Trash | Notes say when the file is inside a git repository or other symlinks point at it. |
+
+For Ollama, the API must be on this machine (`OLLAMA_HOST` loopback, or
+unspecified), answer `GET /api/tags` within a second, and list each tag with
+the SHA-256 of the manifest file modeld read (that is what its `digest`
+field is). Otherwise the running Ollama uses another models folder, and the
+removal is refused. A blob no manifest names is deleted directly, unless a
+`-partial` download of it exists or it changed in the last 5 minutes. With
+Ollama closed, the removal waits for you to open it; there is no offline
+fallback, because only Ollama knows which of its blobs are still in use.
+
+For Hugging Face, nothing is touched while `huggingface_hub` holds the
+blob's download lock (`.locks/<repo>/<etag>.lock`) or an `.incomplete` file
+exists, and modeld holds the lock itself while deleting. The repo folder is
+deleted once no blob of 1 MiB or more, or still downloading, would remain.
+
+**Freed space is an estimate.** Files sharing blocks form a group: the stored
+copy with its clones, or the names of one hard-linked inode. A group's
+blocks are freed only when every member goes, and once the Trash is emptied
+if a member was trashed. When only some members go, each removed file frees
+its private bytes (`getattrlist(ATTR_CMNEXT_PRIVATESIZE)`, exact per file),
+and the rest stays pinned. APFS clone IDs (`ATTR_CMNEXT_CLONEID`) cannot
+group files: a clone gets a new ID as soon as one block diverges, while it
+still shares the rest. Removing one app's clone of a shared model therefore
+frees about nothing, and the app says so.
+
+**Afterwards** the registry forgets every removed path, and the journal
+drops entries whose replaced file is gone, so `restore` and `gc` are not
+blocked by files that no longer exist.
+
+`/usr/bin/trash` moves a file to the Trash under its own name, so it can be
+dragged back. Whether Finder's **Put Back** works for it is not verified:
+macOS privacy controls kept the check from reading the Trash.
+
 ## Machine-readable output
 
 The Mac app runs the `modeld` binary bundled inside it and reads its `--json`
@@ -307,9 +374,9 @@ and keeps running.
   changing one bumps it. [`schema/README.md`](schema/README.md) has the rules,
   and `schema/v1/` has example output that the Rust tests compare against and
   the app's tests decode.
-- **Only what the app runs.** `doctor`, `ls`, `pass`, and `daemon install`,
-  `uninstall`, and `status` have JSON output. Other commands refuse `--json`.
-  Text output is unchanged.
+- **Only what the app runs.** `doctor`, `ls`, `pass`, `rm`, and `daemon
+  install`, `uninstall`, and `status` have JSON output. Other commands
+  refuse `--json`. Text output is unchanged.
 - **A reader that quits never stops a pass.** With `--json` (and for every
   `pass`), `SIGPIPE` stays ignored and write errors are dropped, as in the
   daemon's log. Events go through a bounded queue on their own thread, so a

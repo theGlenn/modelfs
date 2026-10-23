@@ -1,0 +1,81 @@
+{
+  "type": "result",
+  "schema": 1,
+  "result": {
+    "status": "planned",
+    "plan": {
+      "plan_id": "9f86d081884c7d65",
+      "models": [
+        {
+          "digest": "sha256:04b1c301231dd422b8860db31311ab2721511346a32cb1e079c4c4e5f1fe4696",
+          "name": "Qwen3.5-0.8B",
+          "size": 532517120,
+          "everywhere": true
+        }
+      ],
+      "steps": [
+        {
+          "action": "ollama_delete",
+          "provider": "ollama",
+          "path": "/Users/me/.ollama/models/manifests/registry.ollama.ai/library/qwen3.5/0.8b",
+          "tag": "qwen3.5:0.8b",
+          "digest": "sha256:04b1c301231dd422b8860db31311ab2721511346a32cb1e079c4c4e5f1fe4696"
+        },
+        {
+          "action": "trash_folder",
+          "provider": "lmstudio",
+          "path": "/Users/me/.lmstudio/models/lmstudio-community/Qwen3.5-0.8B-GGUF",
+          "tag": null,
+          "digest": "sha256:04b1c301231dd422b8860db31311ab2721511346a32cb1e079c4c4e5f1fe4696"
+        },
+        {
+          "action": "trash",
+          "provider": "manual",
+          "path": "/Users/me/code/demo/fixtures/models/qwen.gguf",
+          "tag": null,
+          "digest": "sha256:04b1c301231dd422b8860db31311ab2721511346a32cb1e079c4c4e5f1fe4696"
+        },
+        {
+          "action": "remove_stored_copy",
+          "provider": "store",
+          "path": "/Users/me/.modeld/blobs/sha256-04b1c301231dd422b8860db31311ab2721511346a32cb1e079c4c4e5f1fe4696",
+          "tag": null,
+          "digest": "sha256:04b1c301231dd422b8860db31311ab2721511346a32cb1e079c4c4e5f1fe4696"
+        }
+      ],
+      "refusals": [
+        {
+          "code": "in_use",
+          "path": "/Users/me/.lmstudio/models/lmstudio-community/Qwen3.5-0.8B-GGUF/Qwen3.5-0.8B-Q4_K_M.gguf",
+          "message": "open in LM Studio",
+          "processes": [
+            "LM Studio"
+          ]
+        }
+      ],
+      "notes": [
+        {
+          "code": "git_repository",
+          "path": "/Users/me/code/demo/fixtures/models/qwen.gguf",
+          "message": "inside the git repository /Users/me/code/demo; if git tracks this file, it shows as deleted",
+          "paths": [
+            "/Users/me/code/demo"
+          ]
+        }
+      ],
+      "collateral": [
+        {
+          "path": "/Users/me/.lmstudio/models/lmstudio-community/Qwen3.5-0.8B-GGUF/README.md",
+          "size": 4096,
+          "reason": "rest of the LM Studio folder lmstudio-community/Qwen3.5-0.8B-GGUF"
+        }
+      ],
+      "frees": {
+        "now": 0,
+        "after_trash": 532521216,
+        "pinned": 0
+      }
+    },
+    "outcome": null
+  }
+}

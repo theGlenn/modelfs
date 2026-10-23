@@ -350,3 +350,125 @@ fn tests_never_touch_the_real_store() {
 
     assert!(Path::new(&store).starts_with(home.dir.path()), "{store}");
 }
+
+/// The digest `ls --json` reports for the only stored model.
+fn only_digest(home: &Home) -> String {
+    let (lines, _) = home.json(&["ls", "--json"]);
+    last_line(&lines)["result"]["models"][0]["digest"]
+        .as_str()
+        .expect("digest")
+        .to_string()
+}
+
+#[test]
+fn rm_dry_run_plans_and_changes_nothing() {
+    let home = Home::new();
+    let model = home.settled_model("a.gguf");
+    home.json(&["pass", "--json", "--min-size", "1"]);
+    let digest = only_digest(&home);
+
+    let (lines, status) = home.json(&["rm", &digest, "--everywhere", "--dry-run", "--json"]);
+
+    assert!(status.success());
+    let result = &last_line(&lines)["result"];
+    assert_eq!(result["status"], "planned");
+    let actions: Vec<&str> = result["plan"]["steps"]
+        .as_array()
+        .expect("steps")
+        .iter()
+        .filter_map(|step| step["action"].as_str())
+        .collect();
+    assert_eq!(actions, ["trash", "remove_stored_copy"]);
+    assert_eq!(result["plan"]["plan_id"].as_str().map(str::len), Some(16));
+    assert!(model.exists());
+}
+
+#[test]
+fn rm_with_json_needs_an_expected_plan_or_yes() {
+    let home = Home::new();
+    home.settled_model("a.gguf");
+    home.json(&["pass", "--json", "--min-size", "1"]);
+    let digest = only_digest(&home);
+
+    let (lines, status) = home.json(&["rm", &digest, "--everywhere", "--json"]);
+
+    assert_eq!(status.code(), Some(1));
+    assert_eq!(last_line(&lines)["error"]["code"], "confirmation_required");
+}
+
+#[test]
+fn rm_with_a_stale_plan_id_exits_3_and_changes_nothing() {
+    let home = Home::new();
+    let model = home.settled_model("a.gguf");
+    home.json(&["pass", "--json", "--min-size", "1"]);
+    let digest = only_digest(&home);
+
+    let (lines, status) = home.json(&[
+        "rm",
+        &digest,
+        "--everywhere",
+        "--expect-plan",
+        "0000000000000000",
+        "--json",
+    ]);
+
+    assert_eq!(status.code(), Some(3));
+    let result = &last_line(&lines)["result"];
+    assert_eq!(result["status"], "plan_changed");
+    assert_eq!(result["outcome"], Value::Null);
+    assert!(model.exists());
+}
+
+#[test]
+fn rm_removes_a_hugging_face_model_it_planned() {
+    let home = Home::new();
+    let repo = home
+        .dir
+        .path()
+        .join(".cache/huggingface/hub/models--org--tiny");
+    let blob_name = "04b1c301231dd422b8860db31311ab2721511346a32cb1e079c4c4e5f1fe4696";
+    let blob = repo.join("blobs").join(blob_name);
+    std::fs::create_dir_all(blob.parent().expect("parent")).expect("mkdir");
+    std::fs::write(&blob, WEIGHTS).expect("write blob");
+    let old = SystemTime::now() - Duration::from_hours(1);
+    std::fs::File::open(&blob)
+        .and_then(|file| file.set_times(std::fs::FileTimes::new().set_modified(old)))
+        .expect("backdate");
+    let snapshot = repo.join("snapshots/abc");
+    std::fs::create_dir_all(&snapshot).expect("mkdir");
+    std::os::unix::fs::symlink(&blob, snapshot.join("model.gguf")).expect("link");
+    home.json(&["pass", "--json", "--min-size", "1"]);
+    let digest = only_digest(&home);
+    let generation = home.generation();
+    let (dry, _) = home.json(&[
+        "rm",
+        &digest,
+        "--provider",
+        "huggingface",
+        "--dry-run",
+        "--json",
+    ]);
+    let plan_id = last_line(&dry)["result"]["plan"]["plan_id"]
+        .as_str()
+        .expect("plan id")
+        .to_string();
+
+    let (lines, status) = home.json(&[
+        "rm",
+        &digest,
+        "--provider",
+        "huggingface",
+        "--expect-plan",
+        &plan_id,
+        "--json",
+    ]);
+    let (ls, _) = home.json(&["ls", "--json"]);
+
+    assert!(status.success(), "{lines:?}");
+    let result = &last_line(&lines)["result"];
+    assert_eq!(result["status"], "removed");
+    assert!(lines.iter().any(|line| line["event"]["kind"] == "locked"));
+    assert!(!repo.exists());
+    assert_eq!(last_line(&ls)["result"]["models"], serde_json::json!([]));
+    assert_ne!(home.generation(), generation);
+}

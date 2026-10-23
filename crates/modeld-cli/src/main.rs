@@ -18,7 +18,9 @@ mod launchd;
 mod pass;
 mod plan;
 mod reconcile;
+mod remove;
 mod report;
+mod rm;
 mod schedule;
 mod semantics;
 mod sync;
@@ -26,7 +28,7 @@ mod sync;
 #[derive(Parser)]
 #[command(name = "modeld", version, about = "Local model storage layer")]
 struct Cli {
-    /// Write JSON Lines instead of text (doctor, ls, pass, daemon install/uninstall/status)
+    /// Write JSON Lines instead of text (doctor, ls, pass, rm, daemon install/uninstall/status)
     #[arg(long, global = true)]
     json: bool,
     #[command(subcommand)]
@@ -77,6 +79,35 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Remove a model from one app, or from every app and the store
+    #[command(group(
+        clap::ArgGroup::new("scope")
+            .required(true)
+            .args(["path", "provider", "everywhere"])
+    ))]
+    Rm {
+        /// Digests of the models (`sha256:<hex>`, as `where` and `ls --json` show)
+        #[arg(required = true, value_name = "DIGEST")]
+        digests: Vec<Digest>,
+        /// Remove this copy; repeat for several (paths `where` lists)
+        #[arg(long, value_name = "PATH")]
+        path: Vec<PathBuf>,
+        /// Remove every copy one app holds
+        #[arg(long, value_parser = ["ollama", "huggingface", "lmstudio", "manual"])]
+        provider: Option<String>,
+        /// Remove every copy, and the stored copy
+        #[arg(long)]
+        everywhere: bool,
+        /// Show the plan; change nothing
+        #[arg(long)]
+        dry_run: bool,
+        /// Remove only if the plan still has this id (from a dry run)
+        #[arg(long, value_name = "ID")]
+        expect_plan: Option<String>,
+        /// Remove without asking
+        #[arg(long)]
+        yes: bool,
+    },
     /// Run one daemon pass now: sync, then clone duplicates of stored models
     Pass {
         /// Sync the store but only report the clones a real pass would make
@@ -117,6 +148,7 @@ impl Command {
             Self::Doctor
                 | Self::Ls
                 | Self::Pass { .. }
+                | Self::Rm { .. }
                 | Self::Daemon {
                     action: Some(_),
                     ..
@@ -135,11 +167,11 @@ fn main() {
             "this command has no JSON output; run it without --json",
         );
     }
-    // JSON output, `pass`, and the daemon keep SIGPIPE ignored, so a reader
-    // quitting never stops a pass: see the `json` and `pass` modules.
+    // JSON output, `pass`, `rm`, and the daemon keep SIGPIPE ignored, so a
+    // reader quitting never stops them: see the `json` and `pass` modules.
     let keeps_running = matches!(
         command,
-        Command::Pass { .. } | Command::Daemon { action: None, .. }
+        Command::Pass { .. } | Command::Rm { .. } | Command::Daemon { action: None, .. }
     );
     if output == Output::Text && !keeps_running {
         end_quietly_on_closed_pipe();
@@ -168,6 +200,27 @@ fn main() {
             if !dry_run {
                 announce_change();
             }
+        }
+        Command::Rm {
+            digests,
+            path,
+            provider,
+            everywhere,
+            dry_run,
+            expect_plan,
+            yes,
+        } => {
+            let scope = match (provider, everywhere) {
+                (Some(provider), _) => remove::Scope::Provider(provider),
+                (None, true) => remove::Scope::Everywhere,
+                (None, false) => remove::Scope::Paths(path),
+            };
+            let options = rm::Options {
+                dry_run,
+                expect_plan,
+                yes,
+            };
+            rm::run(&modeld_home(), &digests, &scope, &options, output);
         }
         Command::Pass { dry_run, min_size } => pass::run(
             &modeld_home(),

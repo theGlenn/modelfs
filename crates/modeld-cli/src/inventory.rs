@@ -19,7 +19,7 @@
 //! as every command does.)
 
 use crate::report;
-use modeld_core::{Digest, FileId};
+use modeld_core::{Digest, FileId, ProviderKind};
 use modeld_providers::{Detection, ProviderRoot, huggingface, lmstudio, ollama};
 use modeld_store::{FileStamp, Reference, Store, StoreError, StoredArtifact};
 use serde::{Deserialize, Serialize};
@@ -179,7 +179,7 @@ impl Model {
 /// Order matters: a recorded clone is trusted only while its stamp matches,
 /// and the sampled block comparison only runs on a file whose stamp still
 /// matches its verified digest.
-fn locate(
+pub(crate) fn locate(
     store: &Store,
     digest: &Digest,
     stored: &StoredCopy,
@@ -261,11 +261,21 @@ fn space(size: u64, blob: Option<FileId>, copies: &[(ReferenceState, Option<File
 }
 
 /// Whether a stat error means the path is gone, not just unreadable.
-fn is_gone(error: &std::io::Error) -> bool {
+pub(crate) fn is_gone(error: &std::io::Error) -> bool {
     matches!(
         error.kind(),
         std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
     )
+}
+
+/// The provider names the registry and JSON use for each app.
+pub(crate) fn provider_name(kind: ProviderKind) -> &'static str {
+    match kind {
+        ProviderKind::Ollama => "ollama",
+        ProviderKind::HuggingFace => "huggingface",
+        ProviderKind::LmStudio => "lmstudio",
+        _ => "manual",
+    }
 }
 
 fn count<T>(items: impl Iterator<Item = T>) -> u64 {

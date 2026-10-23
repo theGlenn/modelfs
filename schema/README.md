@@ -2,9 +2,9 @@
 
 `modeld --json` writes [JSON Lines](https://jsonlines.org) to stdout: one
 JSON object per line. The Mac app reads it; scripts can too. The commands with
-JSON output are `doctor`, `ls`, `pass`, and `daemon install`, `uninstall`,
-and `status`. Any other command given `--json` fails with the error code
-`unsupported`.
+JSON output are `doctor`, `ls`, `pass`, `rm`, and `daemon install`,
+`uninstall`, and `status`. Any other command given `--json` fails with the
+error code `unsupported`.
 
 Each file in [`v1/`](v1/) is an example of one command's output. The Rust
 tests check that the engine still writes exactly these shapes, and the app's
@@ -16,11 +16,12 @@ Every line has a `type` and the `schema` version:
 
 | `type` | Payload key | Meaning |
 |---|---|---|
-| `event` | `event` | Progress while the command runs. Only `pass` emits events. |
+| `event` | `event` | Progress while the command runs. Only `pass` and `rm` emit events. |
 | `result` | `result` | The command's outcome. Always the last line of a run that succeeded. |
 | `error` | `error` | Why the command failed: a `code` to branch on and a human `message`. |
 
-Exit codes: `0` after a result line, `1` after an error line.
+Exit codes: `0` after a result line, `1` after an error line. `rm` writes a
+result line in more cases; see [Removing](#removing).
 
 ### `pass` events
 
@@ -30,6 +31,7 @@ Exit codes: `0` after a result line, `1` after an error line.
 | `locked` | | The pass holds the lock. |
 | `hashing` | `path`, `size` | A file is being hashed. |
 | `cloning` | `path`, `size` | A duplicate is being replaced with a clone. |
+| `removing` | `path` | `rm` only: a step is about to run on this path. |
 
 A caller may stop a pass with one SIGINT only before `locked`; the pass then
 ends with the error code `cancelled` and changes nothing. After `locked`, the
@@ -45,7 +47,45 @@ wait in a bounded queue and are dropped when it is full. The `result` or
 ### Error codes
 
 `store_unavailable`, `registry_unreadable`, `pass_failed`, `cancelled`,
-`install_failed`, `uninstall_failed`, `unsupported`.
+`install_failed`, `uninstall_failed`, `unsupported`,
+`confirmation_required` (`rm --json` without `--expect-plan` or `--yes`),
+`remove_failed`.
+
+## Removing
+
+`rm <digest>... (--path P... | --provider APP | --everywhere)` plans first.
+Its result has a `status`, the `plan`, and an `outcome` (`null` when nothing
+ran):
+
+| `status` | Exit | Meaning |
+|---|---|---|
+| `planned` | 0 | `--dry-run`: nothing changed. |
+| `plan_changed` | 3 | The plan made under the store lock has another `plan_id` than `--expect-plan`; nothing changed. `plan` is the new one. |
+| `refused` | 1 | `plan.refusals` is not empty; nothing changed. |
+| `removed` | 0 | Every step ran. |
+| `failed` | 1 | `outcome.failure` names the step that failed; the steps before it ran. |
+| `stopped` | 1 | A signal stopped it between steps. |
+
+A caller shows a dry-run plan, then runs it with `--expect-plan <plan_id>`,
+so exactly what was shown runs. Steps run in order; the stored copy is
+always last.
+
+`plan.steps[].action`: `ollama_delete` (through Ollama's API; `tag` is set),
+`unlink` (a Hugging Face snapshot link), `delete`, `delete_folder`, `trash`,
+`trash_folder`, `remove_stored_copy`.
+
+`plan.refusals[].code`: `unknown_model`, `not_referenced`,
+`nothing_selected`, `outside_roots`, `not_regular_file`, `unreadable`,
+`content_changed`, `in_use` (`processes` names them),
+`download_in_progress`, `ollama_not_running`, `ollama_not_loopback`,
+`ollama_store_mismatch`.
+
+`plan.notes[].code`: `last_app` (the stored copy goes too),
+`already_gone`, `verify_by_hashing`, `git_repository`, `symlinks`.
+
+`plan.frees` is about how many bytes go: `now`, `after_trash` (once the
+Trash is emptied), and `pinned` (bytes of removed files that other files
+keep using).
 
 ## Reference states
 

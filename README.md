@@ -126,6 +126,7 @@ Use `modeld <command> --help` for options.
 | `dedupe [--dry-run]` | Replaces duplicates with APFS clones | yes, undoable |
 | `restore` | Rebuilds independent copies | yes |
 | `gc [--dry-run]` | Deletes unused stored copies | store only |
+| `rm <digest> --path P` / `--provider APP` / `--everywhere` | Removes a model from one app, or from every app and the store | yes: deletes, or moves to the Trash |
 | `pass [--dry-run]` | Runs one daemon pass now: imports settled downloads, then replaces duplicates | yes, undoable; store only with `--dry-run` |
 | `daemon [--dry-run]` | Runs automatic deduplication in the foreground | yes, undoable; store only with `--dry-run` |
 | `daemon install` / `uninstall` / `status` | Manages the background daemon | — |
@@ -133,8 +134,24 @@ Use `modeld <command> --help` for options.
 `scan`, `sync`, `dedupe`, `pass`, and `daemon` scan files of at least 1 MiB by
 default. Use `--min-size <bytes>` to change this.
 
-`doctor`, `ls`, `pass`, and the `daemon` subcommands accept `--json` for
-machine-readable output (JSON Lines). See [`schema/`](schema/README.md).
+`doctor`, `ls`, `pass`, `rm`, and the `daemon` subcommands accept `--json`
+for machine-readable output (JSON Lines). See [`schema/`](schema/README.md).
+
+## Removing a model
+
+`modeld where <query>` shows a model's digest and every copy. Then:
+
+```sh
+modeld rm sha256:<digest> --provider lmstudio --dry-run   # what would go
+modeld rm sha256:<digest> --provider lmstudio             # asks first
+modeld rm sha256:<digest> --everywhere                    # every app and the store
+```
+
+Ollama models are removed through Ollama, which must be running; Hugging Face
+cache files are deleted; LM Studio files and your own files go to the Trash.
+Removing the last copy any app has also removes the stored copy. The plan
+says about how much space this frees: removing one app's copy of a model
+other apps share frees about nothing.
 
 ## What gets scanned
 

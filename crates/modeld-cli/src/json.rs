@@ -23,7 +23,6 @@
 use crate::inventory::{self, ReferenceState};
 use crate::launchd;
 use crate::reconcile::{PassEvent, PassReport};
-use modeld_core::ProviderKind;
 use modeld_providers::Detection;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -167,6 +166,10 @@ pub enum ErrorCode {
     UninstallFailed,
     /// The command has no JSON output.
     Unsupported,
+    /// `rm --json` needs `--expect-plan` or `--yes`.
+    ConfirmationRequired,
+    /// A removal could not start.
+    RemoveFailed,
 }
 
 /// The payload of an error line.
@@ -192,6 +195,10 @@ pub enum Event {
     Cloning {
         path: String,
         size: u64,
+    },
+    /// `rm`: a step is about to run on this path.
+    Removing {
+        path: String,
     },
 }
 
@@ -245,7 +252,7 @@ impl Doctor {
                 .roots
                 .iter()
                 .map(|root| Root {
-                    provider: provider_name(root.kind).to_string(),
+                    provider: inventory::provider_name(root.kind).to_string(),
                     path: text(&root.root),
                     excluded: root.excluded.iter().map(|path| text(path)).collect(),
                 })
@@ -597,13 +604,214 @@ pub struct DaemonUninstall {
     pub was_installed: bool,
 }
 
-/// The provider names the registry and JSON use.
-fn provider_name(kind: ProviderKind) -> &'static str {
-    match kind {
-        ProviderKind::Ollama => "ollama",
-        ProviderKind::HuggingFace => "huggingface",
-        ProviderKind::LmStudio => "lmstudio",
-        _ => "manual",
+/// `rm`: the plan, and what running it did.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Rm {
+    pub status: crate::rm::Status,
+    pub plan: RemovalPlan,
+    /// What ran; `null` when nothing did (planned, plan changed, refused).
+    pub outcome: Option<RemovalOutcome>,
+}
+
+/// Everything a removal would do, and what blocks it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemovalPlan {
+    /// Pass back with `--expect-plan` to run exactly this plan.
+    pub plan_id: String,
+    pub models: Vec<RemovalModel>,
+    /// In the order they run.
+    pub steps: Vec<RemovalStep>,
+    /// Anything here blocks the whole removal.
+    pub refusals: Vec<RemovalRefusal>,
+    pub notes: Vec<RemovalNote>,
+    /// Files that go along without being model copies.
+    pub collateral: Vec<RemovalCollateral>,
+    pub frees: Frees,
+}
+
+/// A model the plan removes copies of.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemovalModel {
+    pub digest: String,
+    pub name: String,
+    pub size: u64,
+    /// Every copy goes, and the stored copy too.
+    pub everywhere: bool,
+}
+
+/// One planned change.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemovalStep {
+    pub action: StepAction,
+    /// The app the path belongs to, or `store`.
+    pub provider: String,
+    pub path: String,
+    /// The Ollama tag, for `ollama_delete`.
+    pub tag: Option<String>,
+    pub digest: String,
+}
+
+/// How a step removes its path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StepAction {
+    OllamaDelete,
+    Unlink,
+    Delete,
+    DeleteFolder,
+    Trash,
+    TrashFolder,
+    RemoveStoredCopy,
+}
+
+/// A path that blocks the removal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemovalRefusal {
+    pub code: crate::remove::RefusalCode,
+    pub path: String,
+    pub message: String,
+    /// For `in_use`: the processes holding the file open.
+    pub processes: Vec<String>,
+}
+
+/// Something worth knowing before confirming.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemovalNote {
+    pub code: crate::remove::NoteCode,
+    pub path: String,
+    pub message: String,
+    pub paths: Vec<String>,
+}
+
+/// A file that goes along with the model.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemovalCollateral {
+    pub path: String,
+    pub size: u64,
+    pub reason: String,
+}
+
+/// About how much space the removal frees, in bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Frees {
+    pub now: u64,
+    pub after_trash: u64,
+    /// Bytes of removed files that other files keep using.
+    pub pinned: u64,
+}
+
+/// What running the plan did.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemovalOutcome {
+    /// Indexes into `plan.steps` that ran to completion.
+    pub completed: Vec<usize>,
+    /// The step that failed; nothing after it ran.
+    pub failure: Option<StepFailure>,
+    pub stopped: bool,
+    pub warnings: Vec<String>,
+}
+
+/// A step that failed, and why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StepFailure {
+    pub step: usize,
+    pub reason: String,
+}
+
+impl Rm {
+    pub fn new(
+        status: crate::rm::Status,
+        plan: &crate::remove::Plan,
+        outcome: Option<&crate::remove::Outcome>,
+    ) -> Self {
+        Self {
+            status,
+            plan: RemovalPlan::from(plan),
+            outcome: outcome.map(|outcome| RemovalOutcome {
+                completed: outcome.completed.clone(),
+                failure: outcome.failure.as_ref().map(|(step, reason)| StepFailure {
+                    step: *step,
+                    reason: reason.clone(),
+                }),
+                stopped: outcome.stopped,
+                warnings: outcome.warnings.clone(),
+            }),
+        }
+    }
+}
+
+impl From<&crate::remove::Plan> for RemovalPlan {
+    fn from(plan: &crate::remove::Plan) -> Self {
+        Self {
+            plan_id: plan.id.clone(),
+            models: plan
+                .models
+                .iter()
+                .map(|model| RemovalModel {
+                    digest: model.digest.to_string(),
+                    name: model.name.clone(),
+                    size: model.size,
+                    everywhere: model.everywhere,
+                })
+                .collect(),
+            steps: plan.steps.iter().map(RemovalStep::from).collect(),
+            refusals: plan
+                .refusals
+                .iter()
+                .map(|refusal| RemovalRefusal {
+                    code: refusal.code,
+                    path: text(&refusal.path),
+                    message: refusal.message.clone(),
+                    processes: refusal.processes.clone(),
+                })
+                .collect(),
+            notes: plan
+                .notes
+                .iter()
+                .map(|note| RemovalNote {
+                    code: note.code,
+                    path: text(&note.path),
+                    message: note.message.clone(),
+                    paths: note.paths.iter().map(|path| text(path)).collect(),
+                })
+                .collect(),
+            collateral: plan
+                .collateral
+                .iter()
+                .map(|item| RemovalCollateral {
+                    path: text(&item.path),
+                    size: item.size,
+                    reason: item.reason.clone(),
+                })
+                .collect(),
+            frees: Frees {
+                now: plan.frees.now,
+                after_trash: plan.frees.after_trash,
+                pinned: plan.frees.pinned,
+            },
+        }
+    }
+}
+
+impl From<&crate::remove::Step> for RemovalStep {
+    fn from(step: &crate::remove::Step) -> Self {
+        use crate::remove::Action;
+        let (action, tag) = match &step.action {
+            Action::OllamaDelete { tag } => (StepAction::OllamaDelete, Some(tag.clone())),
+            Action::Unlink => (StepAction::Unlink, None),
+            Action::Delete => (StepAction::Delete, None),
+            Action::DeleteFolder => (StepAction::DeleteFolder, None),
+            Action::Trash => (StepAction::Trash, None),
+            Action::TrashFolder => (StepAction::TrashFolder, None),
+            Action::RemoveStoredCopy => (StepAction::RemoveStoredCopy, None),
+        };
+        Self {
+            action,
+            provider: step.provider.clone(),
+            path: text(&step.path),
+            tag,
+            digest: step.digest.to_string(),
+        }
     }
 }
 
@@ -934,6 +1142,112 @@ mod tests {
         }));
         assert_fixture("daemon-uninstall.json", &rendered);
         assert_round_trips::<DaemonUninstall>(&rendered);
+    }
+
+    fn sample_removal_plan() -> RemovalPlan {
+        let lmstudio = format!(
+            "{HOME}/.lmstudio/models/lmstudio-community/Qwen3.5-0.8B-GGUF/Qwen3.5-0.8B-Q4_K_M.gguf"
+        );
+        let blob = format!(
+            "{HOME}/.modeld/blobs/sha256-04b1c301231dd422b8860db31311ab2721511346a32cb1e079c4c4e5f1fe4696"
+        );
+        RemovalPlan {
+            plan_id: "9f86d081884c7d65".to_string(),
+            models: vec![RemovalModel {
+                digest: QWEN.to_string(),
+                name: "Qwen3.5-0.8B".to_string(),
+                size: 532_517_120,
+                everywhere: true,
+            }],
+            steps: vec![
+                RemovalStep {
+                    action: StepAction::OllamaDelete,
+                    provider: "ollama".to_string(),
+                    path: format!(
+                        "{HOME}/.ollama/models/manifests/registry.ollama.ai/library/qwen3.5/0.8b"
+                    ),
+                    tag: Some("qwen3.5:0.8b".to_string()),
+                    digest: QWEN.to_string(),
+                },
+                RemovalStep {
+                    action: StepAction::TrashFolder,
+                    provider: "lmstudio".to_string(),
+                    path: format!("{HOME}/.lmstudio/models/lmstudio-community/Qwen3.5-0.8B-GGUF"),
+                    tag: None,
+                    digest: QWEN.to_string(),
+                },
+                RemovalStep {
+                    action: StepAction::Trash,
+                    provider: "manual".to_string(),
+                    path: format!("{HOME}/code/demo/fixtures/models/qwen.gguf"),
+                    tag: None,
+                    digest: QWEN.to_string(),
+                },
+                RemovalStep {
+                    action: StepAction::RemoveStoredCopy,
+                    provider: "store".to_string(),
+                    path: blob.clone(),
+                    tag: None,
+                    digest: QWEN.to_string(),
+                },
+            ],
+            refusals: vec![RemovalRefusal {
+                code: crate::remove::RefusalCode::InUse,
+                path: lmstudio.clone(),
+                message: "open in LM Studio".to_string(),
+                processes: vec!["LM Studio".to_string()],
+            }],
+            notes: vec![RemovalNote {
+                code: crate::remove::NoteCode::GitRepository,
+                path: format!("{HOME}/code/demo/fixtures/models/qwen.gguf"),
+                message: format!(
+                    "inside the git repository {HOME}/code/demo; if git tracks this file, it shows as deleted"
+                ),
+                paths: vec![format!("{HOME}/code/demo")],
+            }],
+            collateral: vec![RemovalCollateral {
+                path: format!(
+                    "{HOME}/.lmstudio/models/lmstudio-community/Qwen3.5-0.8B-GGUF/README.md"
+                ),
+                size: 4096,
+                reason: "rest of the LM Studio folder lmstudio-community/Qwen3.5-0.8B-GGUF"
+                    .to_string(),
+            }],
+            frees: Frees {
+                now: 0,
+                after_trash: 532_521_216,
+                pinned: 0,
+            },
+        }
+    }
+
+    #[test]
+    fn rm_plan_fixture_matches_the_format() {
+        let rendered = pretty(&result(Rm {
+            status: crate::rm::Status::Planned,
+            plan: sample_removal_plan(),
+            outcome: None,
+        }));
+        assert_fixture("rm-plan.json", &rendered);
+        assert_round_trips::<Rm>(&rendered);
+    }
+
+    #[test]
+    fn rm_removed_fixture_matches_the_format() {
+        let mut plan = sample_removal_plan();
+        plan.refusals.clear();
+        let rendered = pretty(&result(Rm {
+            status: crate::rm::Status::Removed,
+            plan,
+            outcome: Some(RemovalOutcome {
+                completed: vec![0, 1, 2, 3],
+                failure: None,
+                stopped: false,
+                warnings: vec![],
+            }),
+        }));
+        assert_fixture("rm-removed.json", &rendered);
+        assert_round_trips::<Rm>(&rendered);
     }
 
     #[test]
