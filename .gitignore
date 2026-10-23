@@ -1,4 +1,7 @@
 /target
+/dist
+/app/.build
+/app/.swiftpm
 .DS_Store
 *.md
 !README.md

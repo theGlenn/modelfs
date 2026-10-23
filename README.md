@@ -94,6 +94,24 @@ Logical usage:   5.1 GB
 Deduplicated:    532.5 MB
 ```
 
+## Mac app
+
+ModelFS also comes as a menu bar app. It shows every model across your apps,
+which ones share disk space, and what deduplicating would free, and it turns
+the background service on, off, or updates it.
+
+The app is not packaged for download yet. To build it from source, you need
+Rust and Xcode 26 or later; the app needs macOS 15 or later:
+
+```sh
+scripts/build-app.sh --release
+open dist/ModelFS.app
+```
+
+The app runs its own copy of `modeld` (inside `ModelFS.app/Contents/MacOS`)
+and changes nothing that the CLI would not. Its first scan only adds models
+to the store; **Deduplicate now** runs one `modeld pass`.
+
 ## CLI reference
 
 Use `modeld <command> --help` for options.

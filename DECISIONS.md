@@ -333,6 +333,44 @@ and keeps running.
   Watching the registry would loop: SQLite creates and deletes
   `registry.db-wal` on reads too, so each refresh would trigger the next.
 
+## The Mac app
+
+A SwiftUI menu bar app (`app/`, a Swift package) shows the inventory and runs
+passes. It is a viewer and a remote control for the engine; every decision
+about files stays in `modeld`.
+
+- **The engine is bundled and run as a subprocess.** `scripts/build-app.sh`
+  puts the `modeld` it builds at `ModelFS.app/Contents/MacOS/modeld`, so the
+  app and its engine share a version and a JSON schema. Debug builds may
+  point `MODELD_BIN` at a `cargo build` output instead.
+- **The folder variables match the daemon's.** A Mac app does not inherit the
+  shell's environment, and a pass with the wrong `HF_HOME` would scan the
+  wrong folders and prune every reference under the right ones. The app reads
+  `HF_HOME`, `HF_HUB_CACHE`, and `OLLAMA_MODELS` from the installed agent's
+  plist first, otherwise from a login shell (`-l -i`, 5-second limit), and
+  passes them, with `HOME` and a fixed `PATH`, to every engine run, including
+  `daemon install`.
+- **Each pipe is read on its own thread, to the end.** Foundation's
+  `FileHandle.bytes` reads every handle on one shared serial queue: a blocking
+  read of stderr kept stdout from being read, and the engine, blocked on a
+  full stdout pipe, never exited. The app reads stdout and stderr with
+  `read(2)` on one thread each, and keeps reading after the caller stops
+  waiting.
+- **Cancelling is one SIGINT before `locked`, at most.** The app shows Cancel
+  only while a pass waits for the store lock and never signals twice.
+- **One change at a time.** A pass, installing, or removing the service is
+  owned by the app's model, not by a view, so closing the window never cuts
+  one short. Quitting the app leaves a running engine to finish.
+- **Refreshes come from four files.** FSEvents on `~/.modeld` wakes the app
+  for `generation`, `daemon.log`, `journal.jsonl`, and `config.toml`;
+  requests within 250 ms run once, and requests during a refresh run once
+  more after it.
+- **No sandbox.** The app runs `modeld`, which reads app folders anywhere in
+  your home folder and runs `launchctl` and `lsof`.
+- **Menu bar first.** The app has no Dock icon until its window opens. The
+  window opens by itself only while the store is empty, and when the app is
+  launched again while running.
+
 ## Building and shipping
 
 ModelFS uses Rust, edition 2024, and ships as one binary. SQLite is bundled;
