@@ -1,0 +1,116 @@
+schema/v1/pass.jsonl
+  s_007f0b3bec1f2b::t_4487a60fc4c0bd 1-5
+schema/v1/doctor.json
+  s_007f0b3bec1f2b::t_4487a60fc4c0bd 1-27
+crates/modeld-cli/src/main.rs
+  s_007f0b3bec1f2b::t_db3f72e6950c1f 412-418
+  s_007f0b3bec1f2b::t_f7f5c1632dd455 117-123
+  s_007f0b3bec1f2b::t_2827c819531fa8 2,194,222,293,585,605,620
+  s_007f0b3bec1f2b::t_340c580962e46e 14-16,18,29-31,36-42,80-88,112-116,124-127,129-140,144,146-150,152-176,183-185,190-193,195-206,219,221,223-224,266,289-292,294-301,318,340,451,473,557,560-564,580,584,586,592,594-598,602,604,606,609-613,617,619,621-629,635,641-653
+  s_007f0b3bec1f2b::t_62b203ed122149 654
+crates/modeld-cli/src/pass.rs
+  s_007f0b3bec1f2b::t_2827c819531fa8 13,30,35
+  s_007f0b3bec1f2b::t_340c580962e46e 12,18-19,23,29,31,34,36,43
+  s_007f0b3bec1f2b::t_24b0a1dd8bd01c 1-11,14-17,20-22,24-28,32-33,37-42,44-46,52-69
+  s_007f0b3bec1f2b::t_f7f5c1632dd455 47-51
+crates/modeld-cli/src/generation.rs
+  s_007f0b3bec1f2b::t_3cae626df068ff 1-87
+crates/modeld-cli/src/report.rs
+  s_007f0b3bec1f2b::t_ef74ddbc5e864e 179
+crates/modeld-providers/src/lmstudio.rs
+  s_007f0b3bec1f2b::t_066cabb90afbb8 8,22-34,45-56
+  s_007f0b3bec1f2b::t_84ef863365b3bd 57
+schema/v1/daemon-status.json
+  s_007f0b3bec1f2b::t_4487a60fc4c0bd 1-27
+schema/v1/ls.json
+  s_007f0b3bec1f2b::t_4487a60fc4c0bd 1-96
+crates/modeld-cli/src/json.rs
+  s_007f0b3bec1f2b::t_340c580962e46e 491,508-518
+  s_007f0b3bec1f2b::t_83262b52e79452 1-42,50,58,68-490,492-507,519-616,620-623,627,631-663,667-669,673-675,680-684,692-738,741-857
+  s_007f0b3bec1f2b::t_2827c819531fa8 43-49,51-57,59-67
+  s_007f0b3bec1f2b::t_f7f5c1632dd455 617-619,624-626,628-630,664-666,670-672,676-679,685-691,739-740
+crates/modeld-cli/Cargo.toml
+  s_007f0b3bec1f2b::t_3cae626df068ff 22-23
+crates/modeld-cli/src/reconcile.rs
+  s_007f0b3bec1f2b::t_547a2e99addd52 135,156,234,244-312,320-321,329-333,338,343,363
+  s_007f0b3bec1f2b::t_a0ec3a8d401800 7-8,32-45,61,70,72,75,80-82,86-97,99-101,110-128
+  s_007f0b3bec1f2b::t_caf197d11c330a 129
+crates/modeld-providers/src/ollama.rs
+  s_007f0b3bec1f2b::t_9ed9201c0ca29f 111-142,146,150-159,161-163,169-196,204-222,280
+  s_8e393701d0e47f::t_aec28b3958d33c 223,281-349
+crates/modeld-cli/tests/json_cli.rs
+  s_007f0b3bec1f2b::t_883dcaf38acc52 199,204-205,208,211
+  s_007f0b3bec1f2b::t_0cb70dbf4ead10 38,73,100-104,108-110,112-116,273-276
+  s_007f0b3bec1f2b::t_bbf581127e083c 1-37,39-72,74-99,105-107,111,117-198,200-203,206-207,209-210,212-272,277-292
+schema/README.md
+  s_007f0b3bec1f2b::t_7ba07620d7f23e 41-42
+  s_007f0b3bec1f2b::t_c48a3abb2b99b8 1-40,43-86
+.gitignore
+  s_007f0b3bec1f2b::t_7ba07620d7f23e 10
+DECISIONS.md
+  s_007f0b3bec1f2b::t_7ba07620d7f23e 121,188-194,297-328
+  s_007f0b3bec1f2b::t_d4b517c1d398f2 329
+crates/modeld-cli/src/consolidation.rs
+  s_007f0b3bec1f2b::t_db3f72e6950c1f 45-49,54,57,132-138,175-181
+crates/modeld-cli/src/launchd.rs
+  s_007f0b3bec1f2b::t_f7f5c1632dd455 76-78,237-240,512-515
+  s_007f0b3bec1f2b::t_11ea09793bcb59 12-13,15-16,73-75,79-117,168-236,241-248,500-511,516-585
+  s_007f0b3bec1f2b::t_340c580962e46e 28-30
+  s_007f0b3bec1f2b::t_a4a150d80c09ba 586
+crates/modeld-cli/src/inventory.rs
+  s_007f0b3bec1f2b::t_df2dc57039f948 449-451,457-459,463-464,468,470-471,498,504-505
+  s_007f0b3bec1f2b::t_4487a60fc4c0bd 31-33,456
+  s_007f0b3bec1f2b::t_25eb1638ad173b 1-30,34-40,42,44-135,139-212,217,233-234,236,238,244,246-345,350,354-357,359,361-370,374-375,377-384,386,388-397,399-402,413-417,421-422,424-430,432-448,460-462,465-467,469,472-494,496,499-501,503,506-602
+  s_007f0b3bec1f2b::t_2827c819531fa8 41,43,346-349,351-353,360,371-373,376,385,387,398,408-409,412,418-420,423
+  s_007f0b3bec1f2b::t_f7f5c1632dd455 136-138,221-225,239-243,358,431,452-455
+  s_007f0b3bec1f2b::t_63b010fb4c0ba6 213-216,218-220,226-232,235,237,245,403-407,410-411,495,497,502
+schema/v1/error.json
+  s_007f0b3bec1f2b::t_4487a60fc4c0bd 1-8
+README.md
+  s_007f0b3bec1f2b::t_7ba07620d7f23e 111,115-119
+crates/modeld-providers/src/huggingface.rs
+  s_007f0b3bec1f2b::t_066cabb90afbb8 78-90,218-222,227-228
+  s_007f0b3bec1f2b::t_f7f5c1632dd455 223-226
+  s_007f0b3bec1f2b::t_28aa6b0fade610 229
+crates/modeld-cli/src/daemon.rs
+  s_007f0b3bec1f2b::t_2e6a61c3fa9d27 16,92-95,113-120,122,125-127,137-146,148,155,162,166,172,175,178,184
+  s_007f0b3bec1f2b::t_ce9caadb3c4cdd 421-431
+  s_007f0b3bec1f2b::t_14783189d43dfa 188
+  s_c2704cb4e2c63a::t_93da8a078060c8 420
+Cargo.lock
+  s_007f0b3bec1f2b::t_ea403ce642a9ab 405-406
+crates/modeld-core/src/consolidate.rs
+  s_8e393701d0e47f::t_e611f51538ee78 179-190,193,593-610
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "8d340c3231bb872be4d350c017cfacc625673709",
+  "prompts": {},
+  "sessions": {
+    "s_007f0b3bec1f2b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a90249b0-2fdc-4586-9f57-295920133f3c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Glenn Sonna <3216616+theGlenn@users.noreply.github.com>"
+    },
+    "s_8e393701d0e47f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a12845-1c1c-7f80-97e1-d2496b906141",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "Glenn Sonna <3216616+theGlenn@users.noreply.github.com>"
+    },
+    "s_c2704cb4e2c63a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90ed0827-773e-4430-8d97-bf3ab98657cf",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Glenn Sonna <3216616+theGlenn@users.noreply.github.com>"
+    }
+  }
+}
