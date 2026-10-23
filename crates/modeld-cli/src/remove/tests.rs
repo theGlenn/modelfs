@@ -534,6 +534,28 @@ fn a_path_that_is_not_a_copy_of_the_model_is_refused() {
 }
 
 #[test]
+fn a_path_given_through_a_symlinked_folder_still_names_its_copy() {
+    let home = Home::new();
+    let root = home.root(ProviderKind::Manual, "models");
+    let model = settled(&root.root.join("a.gguf"), WEIGHTS);
+    settled(&root.root.join("b.gguf"), WEIGHTS);
+    let alias = home.dir.path().join("alias");
+    std::os::unix::fs::symlink(&root.root, &alias).expect("alias");
+    let roots = [root];
+    home.sync(&roots);
+
+    let plan = home.plan(
+        &roots,
+        &stopped_ollama(),
+        &Scope::Paths(vec![alias.join("a.gguf")]),
+        false,
+    );
+
+    assert!(plan.refusals.is_empty(), "{:?}", plan.refusals);
+    assert_eq!(plan.steps[0].path, model);
+}
+
+#[test]
 fn files_in_a_git_repository_and_linked_files_get_notes() {
     let home = Home::new();
     let project = home.dir.path().join("project");

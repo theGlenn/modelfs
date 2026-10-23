@@ -47,14 +47,7 @@ pub fn render_plan(plan: &Plan) -> String {
             let _ = writeln!(out, "  {}: {}", refusal.path.display(), refusal.message);
         }
     }
-    let frees = plan.frees;
-    let _ = writeln!(
-        out,
-        "Frees about {} now and {} once the Trash is emptied; about {} stays used by other copies.",
-        human_bytes(frees.now),
-        human_bytes(frees.after_trash),
-        human_bytes(frees.pinned)
-    );
+    let _ = writeln!(out, "{}", frees_sentence(plan.frees));
     let _ = writeln!(out, "Plan {}", plan.id);
     out
 }
@@ -90,6 +83,36 @@ pub fn render_outcome(plan: &Plan, outcome: &Outcome) -> String {
         }
     );
     out
+}
+
+/// One sentence on the space freed, naming only what is not zero.
+fn frees_sentence(frees: super::Frees) -> String {
+    if frees.now == 0 && frees.after_trash == 0 {
+        return if frees.pinned > 0 {
+            "Frees about 0 B: other copies share these bytes.".to_string()
+        } else {
+            "Frees about 0 B.".to_string()
+        };
+    }
+    let mut parts = Vec::new();
+    if frees.now > 0 {
+        parts.push(format!("{} now", human_bytes(frees.now)));
+    }
+    if frees.after_trash > 0 {
+        parts.push(format!(
+            "{} once the Trash is emptied",
+            human_bytes(frees.after_trash)
+        ));
+    }
+    let mut sentence = format!("Frees about {}", parts.join(" and "));
+    if frees.pinned > 0 {
+        let _ = write!(
+            sentence,
+            "; {} stays in use by other copies",
+            human_bytes(frees.pinned)
+        );
+    }
+    sentence + "."
 }
 
 fn describe(step: &Step) -> String {

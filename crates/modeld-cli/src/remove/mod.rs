@@ -286,8 +286,15 @@ impl Planner<'_> {
         let references = &artifact.references;
         let mut selected: Vec<&Reference> = match scope {
             Scope::Paths(paths) => {
-                for path in paths {
-                    if !references.iter().any(|reference| reference.path == *path) {
+                let wanted: Vec<PathBuf> = paths.iter().map(|path| resolved(path)).collect();
+                let names = |reference: &Reference| {
+                    paths.contains(&reference.path) || wanted.contains(&resolved(&reference.path))
+                };
+                for (path, resolved_path) in paths.iter().zip(&wanted) {
+                    let known = references.iter().any(|reference| {
+                        reference.path == *path || resolved(&reference.path) == *resolved_path
+                    });
+                    if !known {
                         draft.refuse(
                             RefusalCode::NotReferenced,
                             path,
@@ -297,7 +304,7 @@ impl Planner<'_> {
                 }
                 references
                     .iter()
-                    .filter(|reference| paths.contains(&reference.path))
+                    .filter(|reference| names(reference))
                     .collect()
             }
             Scope::Provider(provider) => references
@@ -572,6 +579,18 @@ fn forget_removed(plan: &Plan, store: &Store) -> Vec<String> {
         warnings.push(format!("could not update the journal ({error})"));
     }
     warnings
+}
+
+/// `path` with symlinks resolved, as scans record it (`/private/var` for
+/// `/var`). A missing file resolves through its folder.
+fn resolved(path: &Path) -> PathBuf {
+    path.canonicalize()
+        .ok()
+        .or_else(|| {
+            let folder = path.parent()?.canonicalize().ok()?;
+            Some(folder.join(path.file_name()?))
+        })
+        .unwrap_or_else(|| path.to_path_buf())
 }
 
 /// Whether `path` no longer exists.
