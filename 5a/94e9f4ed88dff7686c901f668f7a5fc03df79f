@@ -1,0 +1,52 @@
+crates/modeld-providers/src/config.rs
+  s_007f0b3bec1f2b::t_0b005ebbf33187 54-56,61,85,149-154,156-157,159-164
+  s_007f0b3bec1f2b::t_dc0ed9b2b09204 155,158,165,171
+  s_007f0b3bec1f2b::t_7e66d68370bf3a 166-170
+  s_007f0b3bec1f2b::t_3e6fd0d1a9b299 172-173
+crates/modeld-cli/src/remove/guard.rs
+  s_007f0b3bec1f2b::t_7e66d68370bf3a 71-75
+  s_007f0b3bec1f2b::t_aec59dc021fad9 1-70,76-82
+crates/modeld-providers/src/ollama.rs
+  s_007f0b3bec1f2b::t_7e66d68370bf3a 151-153,379-386,394-397
+  s_007f0b3bec1f2b::t_0b005ebbf33187 122-131,134-136,139-144,146-150,154-164,166-169,173-177,376-378,387-393,398
+  s_007f0b3bec1f2b::t_748525f5ad45c8 399
+crates/modeld-cli/src/remove/ollama.rs
+  s_007f0b3bec1f2b::t_922619fb1ea6f1 602
+  s_007f0b3bec1f2b::t_dc1949e6f13320 14,17,100-113,255-266,269-270,279,296,298-319,321,372-385,387-397,420-427
+crates/modeld-cli/src/remove/files.rs
+  s_007f0b3bec1f2b::t_e3dc7e265ec6ee 33-39,50,67-68,110,114-116,125-137
+crates/modeld-cli/src/inventory.rs
+  s_007f0b3bec1f2b::t_7e66d68370bf3a 293-297
+  s_007f0b3bec1f2b::t_083d1c6e91bead 190,263-292,298-301,610-618
+  s_007f0b3bec1f2b::t_a91409445d2ed7 619
+crates/modeld-cli/src/remove/huggingface.rs
+  s_007f0b3bec1f2b::t_ee5706636d71bb 11,23-30,34-38,41-42,47-53,56-60,68,70-72,74,76,78,82-85,90,96-98,101-104,114-130
+  s_007f0b3bec1f2b::t_7e66d68370bf3a 54-55,86-89,99-100
+crates/modeld-cli/src/remove/checks.rs
+  s_007f0b3bec1f2b::t_083d1c6e91bead 25-26,65-70,91,106-109
+  s_007f0b3bec1f2b::t_1a10158a56877a 110-111
+crates/modeld-cli/src/remove/mod.rs
+  s_007f0b3bec1f2b::t_083d1c6e91bead 39,52,102-103,224-234,275,340-341,380-398,415,467,473,505-507,510,572-574,595-599,602-613
+  s_007f0b3bec1f2b::t_7c0cfbb83a3b8e 37
+  s_007f0b3bec1f2b::t_7e66d68370bf3a 508-509
+crates/modeld-cli/src/remove/tests.rs
+  s_007f0b3bec1f2b::t_7e66d68370bf3a 182-190,584-800
+DECISIONS.md
+  s_007f0b3bec1f2b::t_e442e27d6dd0d7 105-106,320-335,350-357,361-367,379-382
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "5a94e9f4ed88dff7686c901f668f7a5fc03df79f",
+  "prompts": {},
+  "sessions": {
+    "s_007f0b3bec1f2b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a90249b0-2fdc-4586-9f57-295920133f3c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Glenn Sonna <3216616+theGlenn@users.noreply.github.com>"
+    }
+  }
+}
