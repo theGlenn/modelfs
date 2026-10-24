@@ -8,7 +8,7 @@
 //! folder goes too once no tracked model file (1 MiB or more, or still
 //! downloading) would remain in it.
 
-use super::{Action, Action::DeleteFolder, Collateral, Draft, RefusalCode, Removal, Step, Target};
+use super::{Action, Collateral, Draft, RefusalCode, Removal, Step, Target};
 use modeld_providers::huggingface::{leftovers, links_to, lock_file, repo_of_blob};
 use modeld_providers::scan::DEFAULT_MIN_SIZE;
 use std::collections::BTreeMap;
@@ -20,27 +20,44 @@ pub(super) fn plan(targets: Option<&Vec<Target>>, draft: &mut Draft) {
     let Some(targets) = targets else { return };
     let mut by_repo: BTreeMap<PathBuf, Vec<&Target>> = BTreeMap::new();
     for target in targets {
-        let repo = target.reference.path.parent().and_then(Path::parent);
-        by_repo
-            .entry(repo.unwrap_or(Path::new("/")).to_path_buf())
-            .or_default()
-            .push(target);
+        match repo_folder(target) {
+            Some(repo) => by_repo.entry(repo).or_default().push(target),
+            None => draft.refuse(
+                RefusalCode::OutsideRoots,
+                &target.reference.path,
+                "not laid out like the Hugging Face cache (models--<org>--<name>/blobs/<file>)",
+            ),
+        }
     }
     for (repo, targets) in by_repo {
         let mut removing = Vec::new();
-        for target in targets.iter().copied() {
-            if plan_blob(target, draft) {
-                removing.push(target.reference.path.clone());
+        let mut unlinking = Vec::new();
+        for target in targets {
+            if let Some(links) = plan_blob(target, draft) {
+                removing.push(target);
+                unlinking.extend(links);
             }
         }
-        if let Some(target) = targets.first().filter(|_| !removing.is_empty()) {
-            plan_repo_folder(&repo, &removing, target, draft);
+        if !removing.is_empty() {
+            plan_repo_folder(&repo, &removing, &unlinking, draft);
         }
     }
 }
 
-/// Plans one blob and its links; returns false when refused.
-fn plan_blob(target: &Target, draft: &mut Draft) -> bool {
+/// The `models--<org>--<name>` folder of a blob, if the layout is the hub's.
+///
+/// The folder must sit directly in the scanned hub root, so a stray
+/// registry row can never make modeld delete anything above a repo.
+fn repo_folder(target: &Target) -> Option<PathBuf> {
+    let blobs = target.reference.path.parent()?;
+    let repo = blobs.parent()?;
+    let named_right =
+        blobs.file_name()? == "blobs" && repo.file_name()?.to_str()?.starts_with("models--");
+    (named_right && repo.parent()? == target.root.root).then(|| repo.to_path_buf())
+}
+
+/// Plans one blob and its links; returns the links, or `None` when refused.
+fn plan_blob(target: &Target, draft: &mut Draft) -> Option<Vec<PathBuf>> {
     let blob = &target.reference.path;
     if is_downloading(blob) {
         draft.refuse(
@@ -48,29 +65,43 @@ fn plan_blob(target: &Target, draft: &mut Draft) -> bool {
             blob,
             "Hugging Face is downloading it",
         );
-        return false;
+        return None;
     }
-    for link in links_to(blob) {
-        let destination = std::fs::read_link(&link).unwrap_or_default();
+    let links = links_to(blob);
+    for link in &links {
+        let destination = std::fs::read_link(link).unwrap_or_default();
         draft.fingerprint(format!("link|{}|{}", link.display(), destination.display()));
-        draft.step(target, Action::Unlink, &link);
+        draft.step(target, Action::Unlink, link, vec![target.guard()]);
     }
-    draft.step(target, Action::Delete, blob);
+    draft.step(target, Action::Delete, blob, vec![target.guard()]);
     draft.removals.insert(blob.clone(), Removal::Delete);
-    true
+    Some(links)
 }
 
 /// Plans deleting the repo folder when nothing tracked would remain.
-fn plan_repo_folder(repo: &Path, removing: &[PathBuf], target: &Target, draft: &mut Draft) {
-    let left = leftovers(repo, removing);
-    let keeps_a_model = left.iter().any(|(path, size)| {
+///
+/// Everything else in the folder (configs, other links, `refs/`) is listed
+/// as going along. If the folder cannot be fully read, it stays.
+fn plan_repo_folder(repo: &Path, removing: &[&Target], unlinking: &[PathBuf], draft: &mut Draft) {
+    let blobs: Vec<PathBuf> = removing
+        .iter()
+        .map(|target| target.reference.path.clone())
+        .collect();
+    let keeps_a_model = leftovers(repo, &blobs).iter().any(|(path, size)| {
         *size >= DEFAULT_MIN_SIZE || path.extension().is_some_and(|ext| ext == "incomplete")
     });
     if keeps_a_model {
         return;
     }
-    let name = repo_of_blob(&target.reference.path).unwrap_or_else(|| repo.display().to_string());
-    for (path, size) in left {
+    let Some(rest) = everything_in(repo) else {
+        return;
+    };
+    let name =
+        repo_of_blob(&removing[0].reference.path).unwrap_or_else(|| repo.display().to_string());
+    for (path, size) in rest {
+        if blobs.contains(&path) || unlinking.contains(&path) {
+            continue;
+        }
         draft.collateral.push((
             Collateral {
                 path,
@@ -80,7 +111,23 @@ fn plan_repo_folder(repo: &Path, removing: &[PathBuf], target: &Target, draft: &
             Removal::Delete,
         ));
     }
-    draft.step(target, DeleteFolder, repo);
+    let guards = removing.iter().map(|target| target.guard()).collect();
+    draft.step(removing[0], Action::DeleteFolder, repo, guards);
+}
+
+/// Every file and link under `folder` with its size; `None` on any read error.
+fn everything_in(folder: &Path) -> Option<Vec<(PathBuf, u64)>> {
+    let mut found = Vec::new();
+    for entry in walkdir::WalkDir::new(folder).follow_links(false) {
+        let entry = entry.ok()?;
+        if entry.file_type().is_dir() {
+            continue;
+        }
+        let size = std::fs::symlink_metadata(entry.path()).ok()?.len();
+        found.push((entry.into_path(), size));
+    }
+    found.sort();
+    Some(found)
 }
 
 /// Whether a download of `blob` is under way: lock held, or partial file.

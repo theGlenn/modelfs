@@ -11,9 +11,10 @@
 //! unspecified address. The HTTP client is a few lines over `TcpStream`, as
 //! the two calls need nothing more.
 
+use super::guard::Guard;
 use super::{Action, Collateral, Draft, RefusalCode, Removal, Target};
 use modeld_core::Digest;
-use modeld_providers::ollama::{ManifestInfo, manifests};
+use modeld_providers::ollama::{ManifestInfo, manifest_scan};
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashSet};
 use std::io::{Read, Write};
@@ -94,6 +95,20 @@ impl Api {
         serde_json::from_slice::<Listing>(&body)
             .map(|listing| listing.models)
             .map_err(|error| ApiError::NotRunning(format!("unreadable model list ({error})")))
+    }
+
+    /// The manifest SHA-256 Ollama lists for `tag`, or `None` if unlisted.
+    ///
+    /// # Errors
+    /// The API is unreachable or not on this machine.
+    pub(super) fn listed_manifest(&self, tag: &str) -> Result<Option<String>, String> {
+        let listed = self.tags().map_err(|error| match error {
+            ApiError::NotLoopback(reason) | ApiError::NotRunning(reason) => reason,
+        })?;
+        Ok(listed
+            .into_iter()
+            .find(|listed| listed.name == tag)
+            .map(|listed| listed.digest))
     }
 
     /// Asks Ollama to delete one tag.
@@ -237,14 +252,22 @@ pub(super) fn plan(targets: Option<&Vec<Target>>, api: &Api, draft: &mut Draft) 
     let mut listing = None;
     let mut by_root: BTreeMap<PathBuf, Vec<&Target>> = BTreeMap::new();
     for target in targets {
-        let root = target.reference.path.parent().and_then(Path::parent);
-        by_root
-            .entry(root.unwrap_or(Path::new("/")).to_path_buf())
-            .or_default()
-            .push(target);
+        if in_blobs_folder(target) {
+            by_root
+                .entry(target.root.root.clone())
+                .or_default()
+                .push(target);
+        } else {
+            draft.refuse(
+                RefusalCode::OutsideRoots,
+                &target.reference.path,
+                "not in the blobs folder of the Ollama models folder",
+            );
+        }
     }
     for (root, targets) in by_root {
-        let tags = manifests(&root);
+        let scan = manifest_scan(&root);
+        let tags = &scan.manifests;
         let removing: HashSet<&Digest> = targets.iter().map(|target| &target.digest).collect();
         let mut deleting: Vec<&ManifestInfo> = Vec::new();
         for target in targets.iter().copied() {
@@ -253,7 +276,7 @@ pub(super) fn plan(targets: Option<&Vec<Target>>, api: &Api, draft: &mut Draft) 
                 .filter(|manifest| manifest.digests.contains(&target.digest))
                 .collect();
             if users.is_empty() {
-                plan_orphan(target, draft);
+                plan_orphan(target, &root, &scan.unreadable, draft);
                 continue;
             }
             let listed = listing.get_or_insert_with(|| api.tags());
@@ -270,21 +293,32 @@ pub(super) fn plan(targets: Option<&Vec<Target>>, api: &Api, draft: &mut Draft) 
                 .insert(target.reference.path.clone(), Removal::Delete);
         }
         for manifest in &deleting {
-            let target = targets
+            let covered: Vec<&Target> = targets
                 .iter()
-                .find(|target| manifest.digests.contains(&target.digest))
-                .copied();
-            if let Some(target) = target {
-                draft.step(
-                    target,
-                    Action::OllamaDelete {
-                        tag: manifest.api_name.clone(),
-                    },
-                    &manifest.path,
-                );
-            }
+                .copied()
+                .filter(|target| manifest.digests.contains(&target.digest))
+                .collect();
+            let Some(first) = covered.first() else {
+                continue;
+            };
+            let on_disk = Digest::sha256_file(&manifest.path)
+                .map(|digest| digest.to_hex())
+                .unwrap_or_default();
+            let mut guards = vec![Guard::OllamaTag {
+                tag: manifest.api_name.clone(),
+                manifest: on_disk,
+            }];
+            guards.extend(covered.iter().map(|target| target.guard()));
+            draft.step(
+                first,
+                Action::OllamaDelete {
+                    tag: manifest.api_name.clone(),
+                },
+                &manifest.path,
+                guards,
+            );
         }
-        add_collateral(&root, &tags, &deleting, &removing, draft);
+        add_collateral(&root, tags, &deleting, &removing, draft);
     }
 }
 
@@ -335,9 +369,32 @@ fn confirm_listed(
     true
 }
 
-/// A blob no manifest names: deleted directly once surely not downloading.
-fn plan_orphan(target: &Target, draft: &mut Draft) {
+/// Whether the target is `<models root>/blobs/<file>`.
+fn in_blobs_folder(target: &Target) -> bool {
+    let blobs = target.reference.path.parent();
+    blobs.is_some_and(|blobs| {
+        blobs.file_name().is_some_and(|name| name == "blobs")
+            && blobs.parent() == Some(target.root.root.as_path())
+    })
+}
+
+/// A blob no manifest names: deleted directly once surely unused.
+///
+/// "No manifest names it" is only proven when every manifest could be
+/// read; an unreadable one (or one caught mid-write by a pull) might.
+fn plan_orphan(target: &Target, root: &Path, unreadable: &[PathBuf], draft: &mut Draft) {
     let blob = &target.reference.path;
+    if let Some(manifest) = unreadable.first() {
+        draft.refuse(
+            RefusalCode::Unreadable,
+            blob,
+            format!(
+                "no tag names it, but the Ollama manifest {} could not be read, so it may",
+                manifest.display()
+            ),
+        );
+        return;
+    }
     let partial = format!("sha256-{}-partial", target.digest.to_hex());
     let downloading = blob
         .parent()
@@ -360,7 +417,14 @@ fn plan_orphan(target: &Target, draft: &mut Draft) {
         );
         return;
     }
-    draft.step(target, Action::Delete, blob);
+    let guards = vec![
+        target.guard(),
+        Guard::OllamaOrphan {
+            root: root.to_path_buf(),
+            digest: target.digest.clone(),
+        },
+    ];
+    draft.step(target, Action::Delete, blob, guards);
     draft.removals.insert(blob.clone(), Removal::Delete);
 }
 
@@ -535,7 +599,7 @@ pub(super) mod tests {
 
     /// Deletes blobs no manifest uses anymore, as `ollama rm` does.
     fn prune_unused_blobs(root: &Path) {
-        let used: HashSet<Digest> = manifests(root)
+        let used: HashSet<Digest> = modeld_providers::ollama::manifests(root)
             .into_iter()
             .flat_map(|manifest| manifest.digests)
             .collect();

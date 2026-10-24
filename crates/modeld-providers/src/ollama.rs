@@ -119,25 +119,62 @@ pub struct ManifestInfo {
     pub digests: Vec<Digest>,
 }
 
+/// Every tag manifest under an Ollama models root, and what could not be read.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ManifestScan {
+    pub manifests: Vec<ManifestInfo>,
+    /// Manifests or folders that could not be read or parsed. Any of them
+    /// may name any blob, so no blob can be proven unused while this is
+    /// not empty.
+    pub unreadable: Vec<PathBuf>,
+}
+
 /// Reads every tag manifest under an Ollama models root.
 ///
-/// Unreadable and unparseable manifests are left out: a tag Ollama itself
-/// cannot read names no blob. Tags sharing a blob each appear, so callers
-/// can list every tag that uses it.
+/// Unreadable and unparseable manifests are left out, as a tag Ollama itself
+/// cannot read names no blob; use [`manifest_scan`] to learn about them.
+/// Tags sharing a blob each appear, so callers can list every tag using it.
 #[must_use]
 pub fn manifests(models_root: &Path) -> Vec<ManifestInfo> {
+    manifest_scan(models_root).manifests
+}
+
+/// Reads every tag manifest, recording the ones (and folders) it could not.
+#[must_use]
+pub fn manifest_scan(models_root: &Path) -> ManifestScan {
     let manifests = models_root.join("manifests");
-    manifest_files(&manifests)
-        .filter_map(|entry| {
+    let mut scan = ManifestScan::default();
+    for entry in walkdir::WalkDir::new(&manifests).follow_links(false) {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                let path = error
+                    .path()
+                    .map_or_else(|| manifests.clone(), Path::to_path_buf);
+                // A models root without a manifests folder simply has no tags.
+                if path != manifests {
+                    scan.unreadable.push(path);
+                }
+                continue;
+            }
+        };
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let parsed = layer_digests(entry.path()).ok().and_then(|digests| {
             let api_name = api_name(entry.path().strip_prefix(&manifests).ok()?)?;
-            let digests = layer_digests(entry.path()).ok()?;
-            Some(ManifestInfo {
+            Some((api_name, digests))
+        });
+        match parsed {
+            Some((api_name, digests)) => scan.manifests.push(ManifestInfo {
                 path: entry.into_path(),
                 api_name,
                 digests,
-            })
-        })
-        .collect()
+            }),
+            None => scan.unreadable.push(entry.into_path()),
+        }
+    }
+    scan
 }
 
 /// Maps blob digests to `ollama/<model>:<tag>` labels by reading all manifests.
@@ -334,6 +371,30 @@ mod tests {
             Some("hf.co/bartowski/Llama-3.2-1B-GGUF:Q4_K_M")
         );
         assert_eq!(name("orphan-tag"), None);
+    }
+
+    #[test]
+    fn an_unreadable_manifest_is_reported_by_the_scan() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        write_manifest(
+            dir.path(),
+            "registry.ollama.ai/library/qwen3/4b",
+            &[MODEL_HEX],
+        );
+        let broken = dir
+            .path()
+            .join("manifests/registry.ollama.ai/library/broken/1b");
+        std::fs::create_dir_all(broken.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&broken, b"{ half a manifest").expect("write broken manifest");
+
+        let scan = manifest_scan(dir.path());
+
+        assert_eq!(scan.manifests.len(), 1);
+        assert_eq!(scan.unreadable, [broken]);
+        assert_eq!(
+            manifest_scan(&dir.path().join("nothing-here")),
+            ManifestScan::default()
+        );
     }
 
     #[test]

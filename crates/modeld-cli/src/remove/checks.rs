@@ -22,6 +22,8 @@ pub(super) struct Context<'a> {
 pub(super) struct Checked {
     /// The scanned folder the path is in.
     pub root: ProviderRoot,
+    /// The stamp the file had when it passed.
+    pub stamp: FileStamp,
     /// The path's stamp, for the plan id.
     pub fingerprint: String,
     /// Set when the content still has to be proven by hashing.
@@ -60,6 +62,12 @@ pub(super) fn check(
             "not a regular file anymore".to_string(),
         ));
     }
+    if inside_store(context.store, path) {
+        return Err(refuse(
+            RefusalCode::OutsideRoots,
+            "inside the ModelFS store; only the store manages its files".to_string(),
+        ));
+    }
     let root = root_of(context.roots, reference).ok_or_else(|| {
         refuse(
             RefusalCode::OutsideRoots,
@@ -80,6 +88,7 @@ pub(super) fn check(
     }
     Ok(Checked {
         root: root.clone(),
+        stamp,
         fingerprint: format!(
             "stamp|{}|{}|{}|{}.{}|{}.{}",
             path.display(),
@@ -92,6 +101,12 @@ pub(super) fn check(
         ),
         note,
     })
+}
+
+/// Whether `path` is the store's own (its blobs, its registry).
+fn inside_store(store: &Store, path: &Path) -> bool {
+    let canonical = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    path.starts_with(store.root()) || canonical(path).starts_with(canonical(store.root()))
 }
 
 /// The most specific scanned folder of the reference's app holding it.

@@ -30,7 +30,13 @@ pub(super) fn plan_lmstudio(targets: Option<&Vec<Target>>, draft: &mut Draft) {
             .iter()
             .map(|target| target.reference.path.as_path())
             .collect();
-        let Some(folder) = folder.filter(|folder| !holds_other_models(folder, &paths)) else {
+        // Trash the whole folder only when it was read in full and holds no
+        // other model; anything unreadable might be one.
+        let contents = folder.as_deref().and_then(files_in);
+        let emptied = contents
+            .as_ref()
+            .is_some_and(|files| !holds_other_models(files, &paths));
+        let (Some(folder), Some(files), true) = (folder, contents, emptied) else {
             for target in targets {
                 trash_file(target, draft);
             }
@@ -41,7 +47,7 @@ pub(super) fn plan_lmstudio(targets: Option<&Vec<Target>>, draft: &mut Draft) {
             .unwrap_or(&folder)
             .display()
             .to_string();
-        for (path, size) in files_in(&folder) {
+        for (path, size) in files {
             if !paths.contains(&path.as_path()) {
                 draft.collateral.push((
                     Collateral {
@@ -58,7 +64,8 @@ pub(super) fn plan_lmstudio(targets: Option<&Vec<Target>>, draft: &mut Draft) {
                 .removals
                 .insert(target.reference.path.clone(), Removal::Trash);
         }
-        draft.step(targets[0], Action::TrashFolder, &folder);
+        let guards = targets.iter().map(|target| target.guard()).collect();
+        draft.step(targets[0], Action::TrashFolder, &folder, guards);
     }
 }
 
@@ -100,13 +107,13 @@ pub(super) fn plan_manual(
 
 fn trash_file(target: &Target, draft: &mut Draft) {
     let path = &target.reference.path;
-    draft.step(target, Action::Trash, path);
+    draft.step(target, Action::Trash, path, vec![target.guard()]);
     draft.removals.insert(path.clone(), Removal::Trash);
 }
 
-/// Whether `folder` holds a model file other than `removing`.
-fn holds_other_models(folder: &Path, removing: &[&Path]) -> bool {
-    files_in(folder).iter().any(|(path, _)| {
+/// Whether `files` include a model file other than `removing`.
+fn holds_other_models(files: &[(PathBuf, u64)], removing: &[&Path]) -> bool {
+    files.iter().any(|(path, _)| {
         !removing.contains(&path.as_path())
             && path
                 .extension()
@@ -115,18 +122,19 @@ fn holds_other_models(folder: &Path, removing: &[&Path]) -> bool {
     })
 }
 
-/// Every file under `folder`, with its size.
-fn files_in(folder: &Path) -> Vec<(PathBuf, u64)> {
-    walkdir::WalkDir::new(folder)
-        .follow_links(false)
-        .into_iter()
-        .filter_map(Result::ok)
-        .filter(|entry| !entry.file_type().is_dir())
-        .filter_map(|entry| {
-            let size = entry.metadata().ok()?.len();
-            Some((entry.into_path(), size))
-        })
-        .collect()
+/// Every file and link under `folder` with its size; `None` on any read error.
+fn files_in(folder: &Path) -> Option<Vec<(PathBuf, u64)>> {
+    let mut found = Vec::new();
+    for entry in walkdir::WalkDir::new(folder).follow_links(false) {
+        let entry = entry.ok()?;
+        if entry.file_type().is_dir() {
+            continue;
+        }
+        let size = std::fs::symlink_metadata(entry.path()).ok()?.len();
+        found.push((entry.into_path(), size));
+    }
+    found.sort();
+    Some(found)
 }
 
 /// The nearest folder above `path` with a `.git` entry.

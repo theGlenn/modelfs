@@ -179,7 +179,15 @@ fn hugging_face_links_go_before_their_blob_then_the_emptied_repo() {
         ]
     );
     assert_eq!(plan.steps[0].path, hub.links[0]);
-    assert_eq!(plan.collateral.len(), 1, "the small config blob goes too");
+    let collateral: Vec<&PathBuf> = plan.collateral.iter().map(|item| &item.path).collect();
+    assert_eq!(
+        collateral,
+        [
+            &hub.repo.join("blobs").join(digest(b"{}").to_hex()),
+            &hub.repo.join("snapshots/aaa/config.json")
+        ],
+        "the small config blob and its link go too"
+    );
     assert_eq!(outcome.failure, None);
     assert!(!hub.repo.exists());
     assert!(home.artifact().is_none());
@@ -572,4 +580,221 @@ fn files_in_a_git_repository_and_linked_files_get_notes() {
     let notes: Vec<NoteCode> = plan.notes.iter().map(|note| note.code).collect();
     assert!(notes.contains(&NoteCode::GitRepository), "{notes:?}");
     assert!(notes.contains(&NoteCode::Symlinks), "{notes:?}");
+}
+
+#[test]
+fn a_copy_on_an_unplugged_drive_keeps_the_stored_copy() {
+    let home = Home::new();
+    let root = home.root(ProviderKind::Manual, "models");
+    let model = settled(&root.root.join("a.gguf"), WEIGHTS);
+    let roots = [root];
+    home.sync(&roots);
+    let unplugged = PathBuf::from("/Volumes/modeld-test-unplugged/models/a.gguf");
+    home.store
+        .record_reference(
+            &digest(WEIGHTS),
+            &unplugged,
+            ProviderKind::LmStudio,
+            None,
+            1,
+        )
+        .expect("record reference");
+
+    let one_app = home.plan(&roots, &stopped_ollama(), &Scope::Paths(vec![model]), false);
+    let everywhere = home.plan(&roots, &stopped_ollama(), &Scope::Everywhere, false);
+
+    assert!(
+        !one_app.models[0].everywhere,
+        "the drive's copy still exists"
+    );
+    assert!(!actions(&one_app).contains(&&Action::RemoveStoredCopy));
+    assert_eq!(codes(&everywhere), [RefusalCode::Unreadable]);
+}
+
+#[test]
+fn an_unreadable_ollama_manifest_blocks_deleting_an_orphan() {
+    let home = Home::new();
+    let root = home.root(ProviderKind::Ollama, "ollama/models");
+    let hex = digest(WEIGHTS).to_hex();
+    settled(
+        &root.root.join("blobs").join(format!("sha256-{hex}")),
+        WEIGHTS,
+    );
+    settled(
+        &root
+            .root
+            .join("manifests/registry.ollama.ai/library/half/written"),
+        b"{ \"layers\": [",
+    );
+    let roots = [root];
+    home.sync(&roots);
+
+    let plan = home.plan(&roots, &stopped_ollama(), &Scope::Everywhere, false);
+
+    assert_eq!(codes(&plan), [RefusalCode::Unreadable]);
+    assert!(!actions(&plan).contains(&&Action::Delete));
+}
+
+#[test]
+fn a_file_rewritten_after_planning_stops_its_step() {
+    let home = Home::new();
+    let root = home.root(ProviderKind::Manual, "models");
+    let model = settled(&root.root.join("a.gguf"), WEIGHTS);
+    let roots = [root];
+    home.sync(&roots);
+    let plan = home.plan(&roots, &stopped_ollama(), &Scope::Everywhere, true);
+
+    settled(&model, WEIGHTS);
+    let outcome = home.execute(&plan, &stopped_ollama());
+
+    let (step, reason) = outcome.failure.expect("refused to run");
+    assert_eq!(step, 0);
+    assert!(reason.contains("changed since the plan"), "{reason}");
+    assert!(model.exists());
+    assert!(home.store.blob_path(&digest(WEIGHTS)).exists());
+}
+
+#[test]
+fn a_re_pulled_ollama_tag_is_not_deleted() {
+    let home = Home::new();
+    let (root, tags, blob) = ollama_models(&home);
+    let ollama = FakeOllama::serve(root.root.clone(), tags.clone());
+    let roots = [root];
+    home.sync(&roots);
+    let plan = home.plan(&roots, &ollama.api, &Scope::Everywhere, true);
+
+    let manifest = &tags[0].1;
+    let mut repulled = std::fs::read(manifest).expect("read manifest");
+    repulled.push(b' ');
+    std::fs::write(manifest, repulled).expect("rewrite manifest");
+    let outcome = home.execute(&plan, &ollama.api);
+
+    assert!(
+        outcome
+            .failure
+            .is_some_and(|(_, reason)| reason.contains("changed"))
+    );
+    assert!(ollama.deleted.lock().expect("lock").is_empty());
+    assert!(blob.exists());
+}
+
+#[test]
+fn an_lmstudio_folder_that_cannot_be_read_in_full_stays() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = Home::new();
+    let lmstudio = home.root(ProviderKind::LmStudio, "lmstudio/models");
+    let model = settled(&lmstudio.root.join("pub/repo/model.gguf"), WEIGHTS);
+    let locked = lmstudio.root.join("pub/repo/split");
+    settled(
+        &locked.join("other.gguf"),
+        b"another model, unreadable to the walk",
+    );
+    let roots = [lmstudio];
+    home.sync(&roots);
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).expect("lock");
+
+    let plan = home.plan(
+        &roots,
+        &stopped_ollama(),
+        &Scope::Paths(vec![model.clone()]),
+        false,
+    );
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).expect("unlock");
+
+    assert_eq!(actions(&plan), [&Action::Trash, &Action::RemoveStoredCopy]);
+    assert_eq!(plan.steps[0].path, model);
+}
+
+#[test]
+fn the_stores_own_files_are_never_removed() {
+    let home = Home::new();
+    let root = home.root(ProviderKind::Manual, "models");
+    settled(&root.root.join("a.gguf"), WEIGHTS);
+    let roots = [root];
+    home.sync(&roots);
+    let blob = home.store.blob_path(&digest(WEIGHTS));
+    home.store
+        .record_reference(&digest(WEIGHTS), &blob, ProviderKind::Manual, None, 1)
+        .expect("record reference");
+    let store_root = ProviderRoot {
+        kind: ProviderKind::Manual,
+        root: home.dir.path().to_path_buf(),
+        excluded: vec![],
+        label_prefix: None,
+    };
+
+    let plan = home.plan(
+        &[store_root],
+        &stopped_ollama(),
+        &Scope::Paths(vec![blob]),
+        false,
+    );
+
+    assert_eq!(codes(&plan), [RefusalCode::OutsideRoots]);
+    assert!(plan.refusals[0].message.contains("store"));
+}
+
+#[test]
+fn a_hugging_face_row_outside_a_repo_is_refused() {
+    let home = Home::new();
+    let hub = home.root(ProviderKind::HuggingFace, "hf/hub");
+    let stray = settled(&hub.root.join("stray.gguf"), WEIGHTS);
+    let manual = home.root(ProviderKind::Manual, "models");
+    settled(&manual.root.join("a.gguf"), WEIGHTS);
+    home.sync(std::slice::from_ref(&manual));
+    home.store
+        .record_reference(&digest(WEIGHTS), &stray, ProviderKind::HuggingFace, None, 1)
+        .expect("record reference");
+
+    let plan = home.plan(
+        &[hub, manual],
+        &stopped_ollama(),
+        &Scope::Provider("huggingface".to_string()),
+        false,
+    );
+
+    assert_eq!(codes(&plan), [RefusalCode::OutsideRoots]);
+    assert!(!actions(&plan).contains(&&Action::DeleteFolder));
+}
+
+#[test]
+fn a_file_appearing_in_a_folder_that_goes_changes_the_plan() {
+    let home = Home::new();
+    let hub = hub_repo(&home);
+    let roots = [hub.root.clone()];
+    home.sync(&roots);
+    let before = home.plan(&roots, &stopped_ollama(), &Scope::Everywhere, false);
+
+    settled(&hub.repo.join("blobs/late-download"), b"x");
+    let after = home.plan(&roots, &stopped_ollama(), &Scope::Everywhere, false);
+
+    assert_ne!(before.id, after.id);
+}
+
+#[test]
+fn a_tracked_file_that_goes_along_is_forgotten_too() {
+    let home = Home::new();
+    let hub = hub_repo(&home);
+    let tokenizer = b"tokenizer vocabulary that is tracked as its own model";
+    let tokenizer_blob = settled(
+        &hub.repo.join("blobs").join(digest(tokenizer).to_hex()),
+        tokenizer,
+    );
+    let roots = [hub.root.clone()];
+    home.sync(&roots);
+
+    let plan = home.plan(&roots, &stopped_ollama(), &Scope::Everywhere, false);
+    home.execute(&plan, &stopped_ollama());
+
+    assert!(
+        plan.collateral
+            .iter()
+            .any(|item| item.path == tokenizer_blob)
+    );
+    let other = home
+        .store
+        .artifact(&digest(tokenizer))
+        .expect("registry")
+        .expect("artifact");
+    assert!(other.references.is_empty(), "{:?}", other.references);
 }

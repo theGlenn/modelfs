@@ -187,7 +187,7 @@ pub(crate) fn locate(
 ) -> (ReferenceState, Option<FileId>) {
     let metadata = match std::fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
-        Err(error) if is_gone(&error) => return (ReferenceState::Missing, None),
+        Err(_) if presence(path) == Presence::Gone => return (ReferenceState::Missing, None),
         Err(_) => return (ReferenceState::Unreadable, None),
     };
     let id = Some(file_id(&metadata));
@@ -257,6 +257,45 @@ fn space(size: u64, blob: Option<FileId>, copies: &[(ReferenceState, Option<File
             0
         },
         logical: size * (count(files.iter()) + unidentified),
+    }
+}
+
+/// Whether a path is there, gone, or out of reach.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Presence {
+    Present,
+    /// Missing from a mounted volume: deleted or moved away.
+    Gone,
+    /// On a volume under `/Volumes` that is not mounted, such as an
+    /// unplugged drive. The file may well still exist.
+    Offline,
+}
+
+/// Checks `path`; a path that cannot be checked counts as present.
+pub(crate) fn presence(path: &Path) -> Presence {
+    match std::fs::symlink_metadata(path) {
+        Err(error) if is_gone(&error) => {
+            if volume_unmounted(path) {
+                Presence::Offline
+            } else {
+                Presence::Gone
+            }
+        }
+        _ => Presence::Present,
+    }
+}
+
+/// Whether `path` is on `/Volumes/<name>` and that volume is not mounted.
+fn volume_unmounted(path: &Path) -> bool {
+    use std::path::Component;
+    let mut parts = path.components();
+    match (parts.next(), parts.next(), parts.next()) {
+        (
+            Some(Component::RootDir),
+            Some(Component::Normal(volumes)),
+            Some(Component::Normal(name)),
+        ) if volumes == "Volumes" => !Path::new("/Volumes").join(name).exists(),
+        _ => false,
     }
 }
 
@@ -566,6 +605,16 @@ mod tests {
             state_set(&fixture),
             [ReferenceState::Clone, ReferenceState::Hardlinked]
         );
+    }
+
+    #[test]
+    fn a_file_on_an_unplugged_drive_is_offline_not_gone() {
+        let unplugged = Path::new("/Volumes/modeld-test-no-such-drive/models/a.gguf");
+        let deleted = std::env::temp_dir().join("modeld-test-no-such-file.gguf");
+
+        assert_eq!(presence(unplugged), Presence::Offline);
+        assert_eq!(presence(&deleted), Presence::Gone);
+        assert_eq!(presence(&std::env::temp_dir()), Presence::Present);
     }
 
     #[test]

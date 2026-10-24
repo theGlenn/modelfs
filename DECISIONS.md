@@ -102,6 +102,8 @@ Scanning rules:
 - **Overlapping roots count each file once.** Config globs are resolved to
   real paths, and when two roots reach the same file, the first one keeps it.
   Hardlinks stay separate artifacts.
+- **The store is never scanned as one of your folders.** A broad glob such
+  as `~/*` would otherwise record the store's own blobs as copies.
 - **Unreadable files do not stop a scan.** Each becomes a *skip* with a reason,
   because a live machine has files being downloaded, moved, and deleted while
   it is scanned.
@@ -315,10 +317,22 @@ SIGINT, and the stored copy is always the last step, so a partial failure
 keeps it.
 
 **Every path is checked.** It must be a reference the registry knows, inside
-a folder modeld scans now for that app, a regular file, and still hold the
-model's bytes: a cached digest for its current stamp, or a hash under the
-lock. No process may have it open (`lsof`); a loaded model is mapped into
-memory, and Ollama keeps one mapped while it is loaded.
+a folder modeld scans now for that app (never inside the store), laid out
+the way that app lays out files, a regular file, and still hold the model's
+bytes: a cached digest for its current stamp, or a hash under the lock. No
+process may have it open (`lsof`); a loaded model is mapped into memory, and
+Ollama keeps one mapped while it is loaded.
+
+**And checked again before each step.** Steps run one after another, and an
+Ollama delete can take seconds. Each step carries what it relies on: its
+files keep their stamps and stay closed, Ollama still lists the tag with the
+same manifest, an orphan blob is still named by no manifest. If a fact no
+longer holds, that step and every later one do not run.
+
+**A file on an unplugged drive is not gone.** A missing file counts as gone
+only when its volume is mounted. A copy on a disconnected drive under
+`/Volumes` still counts as an app's copy: removing every other copy does not
+remove the stored copy, and removing it waits until the drive is back.
 
 **Each app's files go the way that app expects.**
 
@@ -333,15 +347,24 @@ For Ollama, the API must be on this machine (`OLLAMA_HOST` loopback, or
 unspecified), answer `GET /api/tags` within a second, and list each tag with
 the SHA-256 of the manifest file modeld read (that is what its `digest`
 field is). Otherwise the running Ollama uses another models folder, and the
-removal is refused. A blob no manifest names is deleted directly, unless a
-`-partial` download of it exists or it changed in the last 5 minutes. With
-Ollama closed, the removal waits for you to open it; there is no offline
-fallback, because only Ollama knows which of its blobs are still in use.
+removal is refused. `DELETE /api/delete` removes the tag's manifest and the
+tag's own blobs that no other tag uses; tested on Ollama 0.40.4, it left an
+unrelated orphan blob and a `-partial` file alone. A blob no manifest names
+is deleted directly, unless a `-partial` download of it exists, it changed
+in the last 5 minutes, or any manifest could not be read (that one might
+name it). With Ollama closed, the removal waits for you to open it; there is
+no offline fallback, because only Ollama knows which of its blobs are still
+in use.
 
 For Hugging Face, nothing is touched while `huggingface_hub` holds the
 blob's download lock (`.locks/<repo>/<etag>.lock`) or an `.incomplete` file
-exists, and modeld holds the lock itself while deleting. The repo folder is
-deleted once no blob of 1 MiB or more, or still downloading, would remain.
+exists, and modeld holds the lock itself while deleting. The repo folder
+(`models--<org>--<name>`, directly in the hub folder) is deleted once no
+blob of 1 MiB or more, or still downloading, would remain; everything else
+in it is listed as going along. An LM Studio or Hugging Face folder that
+cannot be read in full stays, since what cannot be read might be a model.
+The plan id covers every file that goes along, so a file appearing in such
+a folder after the dry run changes the plan.
 
 **Freed space is an estimate.** Files sharing blocks form a group: the stored
 copy with its clones, or the names of one hard-linked inode. A group's
@@ -353,9 +376,10 @@ group files: a clone gets a new ID as soon as one block diverges, while it
 still shares the rest. Removing one app's clone of a shared model therefore
 frees about nothing, and the app says so.
 
-**Afterwards** the registry forgets every removed path, and the journal
-drops entries whose replaced file is gone, so `restore` and `gc` are not
-blocked by files that no longer exist.
+**Afterwards** the registry forgets every removed path, files that went
+along included (an Ollama layer can be another model's reference), and the
+journal drops entries whose replaced file is gone, so `restore` and `gc` are
+not blocked by files that no longer exist.
 
 `/usr/bin/trash` moves a file to the Trash under its own name, so it can be
 dragged back. Whether Finder's **Put Back** works for it is not verified:

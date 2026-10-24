@@ -34,8 +34,9 @@
 //! the registry forgets every removed path, and journal entries of removed
 //! files are dropped so `restore` and `gc` are not blocked by them.
 
-use crate::inventory;
+use crate::inventory::{Presence, presence};
 use accounting::Removal;
+use guard::Guard;
 use modeld_core::Digest;
 use modeld_providers::ProviderRoot;
 use modeld_store::{Reference, Store, StoreError};
@@ -48,6 +49,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 mod accounting;
 mod checks;
 mod files;
+mod guard;
 mod huggingface;
 mod ollama;
 #[cfg(test)]
@@ -97,6 +99,8 @@ pub struct Step {
     pub provider: String,
     pub action: Action,
     pub path: PathBuf,
+    /// Facts checked again right before the step runs.
+    guards: Vec<Guard>,
 }
 
 /// Why a path blocks the removal.
@@ -217,6 +221,17 @@ struct Target {
     digest: Digest,
     reference: Reference,
     root: ProviderRoot,
+    stamp: modeld_store::FileStamp,
+}
+
+impl Target {
+    /// The file must keep its checked stamp and stay closed until removed.
+    fn guard(&self) -> Guard {
+        Guard::File {
+            path: self.reference.path.clone(),
+            stamp: self.stamp,
+        }
+    }
 }
 
 /// Builds plans against the store and the folders modeld scans.
@@ -257,6 +272,7 @@ impl Planner<'_> {
                 provider: "store".to_string(),
                 action: Action::RemoveStoredCopy,
                 path: self.store.blob_path(&model.digest),
+                guards: Vec::new(),
             });
         }
         let frees = accounting::frees(
@@ -321,7 +337,8 @@ impl Planner<'_> {
             );
             return Ok(());
         }
-        let present = |reference: &&Reference| !is_gone(&reference.path);
+        // A copy on an unplugged drive still counts: it is not gone.
+        let present = |reference: &&Reference| presence(&reference.path) != Presence::Gone;
         let everywhere = *scope == Scope::Everywhere
             || references
                 .iter()
@@ -360,14 +377,25 @@ impl Planner<'_> {
         on_hashing: &mut dyn FnMut(&Path, u64),
     ) {
         draft.targets.push(reference.path.clone());
-        if is_gone(&reference.path) {
-            draft.note(
-                NoteCode::AlreadyGone,
-                &reference.path,
-                "already gone; modeld only forgets it",
-                Vec::new(),
-            );
-            return;
+        match presence(&reference.path) {
+            Presence::Gone => {
+                draft.note(
+                    NoteCode::AlreadyGone,
+                    &reference.path,
+                    "already gone; modeld only forgets it",
+                    Vec::new(),
+                );
+                return;
+            }
+            Presence::Offline => {
+                draft.refuse(
+                    RefusalCode::Unreadable,
+                    &reference.path,
+                    "on a drive that is not connected; connect it first",
+                );
+                return;
+            }
+            Presence::Present => {}
         }
         let context = checks::Context {
             store: self.store,
@@ -384,6 +412,7 @@ impl Planner<'_> {
                     digest: digest.clone(),
                     reference: reference.clone(),
                     root: checked.root,
+                    stamp: checked.stamp,
                 });
             }
             Err(refusal) => draft.refusals.push(refusal),
@@ -435,12 +464,13 @@ impl Draft {
         self.fingerprint.push(line);
     }
 
-    fn step(&mut self, target: &Target, action: Action, path: &Path) {
+    fn step(&mut self, target: &Target, action: Action, path: &Path, guards: Vec<Guard>) {
         self.steps.push(Step {
             digest: target.digest.clone(),
             provider: target.reference.provider.clone(),
             action,
             path: path.to_path_buf(),
+            guards,
         });
     }
 
@@ -471,6 +501,12 @@ impl Draft {
                 refusal.code,
                 refusal.path.display()
             ));
+        }
+        // What goes along must be what was shown: a file appearing in a
+        // folder after the dry run changes the id.
+        for (item, _) in &self.collateral {
+            self.fingerprint
+                .push(format!("collateral|{}|{}", item.path.display(), item.size));
         }
         let mut hasher = sha2::Sha256::new();
         for line in &self.fingerprint {
@@ -533,6 +569,9 @@ impl Executor<'_> {
     }
 
     fn perform(&self, step: &Step) -> Result<(), String> {
+        for guard in &step.guards {
+            guard.check(self.ollama)?;
+        }
         match &step.action {
             Action::OllamaDelete { tag } => {
                 self.ollama.delete(tag)?;
@@ -553,10 +592,25 @@ impl Executor<'_> {
     }
 }
 
-/// Forgets references whose files are gone and drops their journal entries.
+/// Forgets every removed path and drops its journal entries.
+///
+/// Covers the targets, the files that went along (an Ollama layer may be
+/// another model's reference), and every step's path. Only paths gone from
+/// a mounted volume are forgotten.
 fn forget_removed(plan: &Plan, store: &Store) -> Vec<String> {
     let mut warnings = Vec::new();
-    let gone: Vec<&PathBuf> = plan.targets.iter().filter(|path| is_gone(path)).collect();
+    let mut candidates: Vec<&PathBuf> = plan
+        .targets
+        .iter()
+        .chain(plan.collateral.iter().map(|item| &item.path))
+        .chain(plan.steps.iter().map(|step| &step.path))
+        .collect();
+    candidates.sort();
+    candidates.dedup();
+    let gone: Vec<&PathBuf> = candidates
+        .into_iter()
+        .filter(|path| presence(path) == Presence::Gone)
+        .collect();
     for path in &gone {
         if let Err(error) = store.remove_reference(path) {
             warnings.push(format!("could not forget {} ({error})", path.display()));
@@ -591,9 +645,4 @@ fn resolved(path: &Path) -> PathBuf {
             Some(folder.join(path.file_name()?))
         })
         .unwrap_or_else(|| path.to_path_buf())
-}
-
-/// Whether `path` no longer exists.
-fn is_gone(path: &Path) -> bool {
-    std::fs::symlink_metadata(path).is_err_and(|error| inventory::is_gone(&error))
 }
