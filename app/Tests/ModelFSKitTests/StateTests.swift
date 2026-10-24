@@ -10,24 +10,30 @@ import Testing
         for _ in 0..<10 {
             await refresher.request()
         }
-        try await Task.sleep(for: .milliseconds(400))
+        try await waitUntil { await runs.value >= 1 }
+        try await Task.sleep(for: .milliseconds(200))
 
         #expect(await runs.value == 1)
     }
 
     @Test func requestsDuringARunCauseExactlyOneMore() async throws {
         let runs = Counter()
+        let started = Gate()
+        let release = Gate()
         let refresher = Refresher(debounce: .milliseconds(10)) {
             await runs.increment()
-            try? await Task.sleep(for: .milliseconds(150))
+            await started.open()
+            await release.wait()
         }
 
         await refresher.request()
-        try await Task.sleep(for: .milliseconds(60))
+        await started.wait()
         for _ in 0..<5 {
             await refresher.request()
         }
-        try await Task.sleep(for: .milliseconds(600))
+        await release.open()
+        try await waitUntil { await runs.value >= 2 }
+        try await Task.sleep(for: .milliseconds(200))
 
         #expect(await runs.value == 2)
     }
