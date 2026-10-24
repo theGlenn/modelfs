@@ -1,0 +1,96 @@
+{
+  "type": "result",
+  "schema": 1,
+  "result": {
+    "models": [
+      {
+        "digest": "sha256:04b1c301231dd422b8860db31311ab2721511346a32cb1e079c4c4e5f1fe4696",
+        "name": "Qwen3.5-0.8B",
+        "kind": "model",
+        "format": "GGUF",
+        "quant": "Q4_K_M",
+        "params": "0.8B",
+        "architecture": "qwen3",
+        "size": 532517120,
+        "stored": {
+          "path": "/Users/me/.modeld/blobs/sha256-04b1c301231dd422b8860db31311ab2721511346a32cb1e079c4c4e5f1fe4696",
+          "present": true
+        },
+        "references": [
+          {
+            "path": "/Users/me/.lmstudio/models/lmstudio-community/Qwen3.5-0.8B-GGUF/Qwen3.5-0.8B-Q4_K_M.gguf",
+            "provider": "lmstudio",
+            "label": "lmstudio-community/Qwen3.5-0.8B-GGUF/Qwen3.5-0.8B-Q4_K_M.gguf",
+            "source": "lmstudio-community/Qwen3.5-0.8B-GGUF",
+            "tags": [],
+            "state": "clone"
+          },
+          {
+            "path": "/Users/me/code/demo/fixtures/models/qwen.gguf",
+            "provider": "manual",
+            "label": "code/demo/fixtures/models/qwen.gguf",
+            "source": "code/demo/fixtures/models",
+            "tags": [],
+            "state": "clone"
+          },
+          {
+            "path": "/Users/me/Downloads/models/qwen-copy.gguf",
+            "provider": "manual",
+            "label": "Downloads/models/qwen-copy.gguf",
+            "source": "Downloads/models",
+            "tags": [],
+            "state": "copy"
+          }
+        ],
+        "space": {
+          "on_disk": 1065034240,
+          "saved": 532517120,
+          "pending": 532517120,
+          "store_only": 0,
+          "logical": 1597551360
+        }
+      },
+      {
+        "digest": "sha256:797b70c4edf85907fe0a49eb85811256f65fa0f7bf52166b147fd16be2be4662",
+        "name": "all-MiniLM-L6-v2",
+        "kind": "model",
+        "format": "GGUF",
+        "quant": "F16",
+        "params": "22M",
+        "architecture": "bert",
+        "size": 45949216,
+        "stored": {
+          "path": "/Users/me/.modeld/blobs/sha256-797b70c4edf85907fe0a49eb85811256f65fa0f7bf52166b147fd16be2be4662",
+          "present": true
+        },
+        "references": [
+          {
+            "path": "/Users/me/.ollama/models/blobs/sha256-797b70c4edf85907fe0a49eb85811256f65fa0f7bf52166b147fd16be2be4662",
+            "provider": "ollama",
+            "label": "ollama/all-minilm:22m",
+            "source": "all-minilm:22m, all-minilm:latest",
+            "tags": [
+              "all-minilm:22m",
+              "all-minilm:latest"
+            ],
+            "state": "missing"
+          }
+        ],
+        "space": {
+          "on_disk": 45949216,
+          "saved": 0,
+          "pending": 0,
+          "store_only": 45949216,
+          "logical": 0
+        }
+      }
+    ],
+    "totals": {
+      "on_disk": 1110983456,
+      "saved": 532517120,
+      "pending": 532517120,
+      "store_only": 45949216,
+      "logical": 1597551360
+    }
+  }
+}

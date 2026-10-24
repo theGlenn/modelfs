@@ -204,6 +204,12 @@ impl Store {
         Ok(Self { root, conn })
     }
 
+    /// The store directory, typically `~/.modeld`.
+    #[must_use]
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
     /// Path a blob for `digest` lives at (whether or not it exists yet).
     #[must_use]
     pub fn blob_path(&self, digest: &Digest) -> PathBuf {
@@ -521,16 +527,47 @@ impl Store {
     /// # Errors
     /// Registry failure. A path that cannot be stat-ed counts as not live.
     pub fn has_live_shared_path(&self, digest: &Digest) -> Result<bool, StoreError> {
+        Ok(!self.live_shared_paths(digest)?.is_empty())
+    }
+
+    /// Recorded clones of `digest` still on disk and unchanged.
+    ///
+    /// These share the blob's blocks whether or not a scan references them.
+    ///
+    /// # Errors
+    /// Registry failure. A path that cannot be stat-ed counts as not live.
+    pub fn live_shared_paths(&self, digest: &Digest) -> Result<Vec<PathBuf>, StoreError> {
         let mut statement = self
             .conn
-            .prepare("SELECT path FROM shared_paths WHERE digest = ?1")?;
+            .prepare("SELECT path FROM shared_paths WHERE digest = ?1 ORDER BY path")?;
         let paths = statement
             .query_map(params![digest.to_string()], |row| row.get::<_, String>(0))?
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(paths.iter().any(|path| {
-            self.path_is_shared(digest, Path::new(path))
-                .unwrap_or(false)
-        }))
+        Ok(paths
+            .into_iter()
+            .map(PathBuf::from)
+            .filter(|path| self.path_is_shared(digest, path).unwrap_or(false))
+            .collect())
+    }
+
+    /// Forgets everything recorded about `path`: its reference, its clone
+    /// record, and its cached digest, in one transaction.
+    ///
+    /// For a file that was just removed; the artifact and its blob stay.
+    ///
+    /// # Errors
+    /// Registry failure; nothing is forgotten then.
+    pub fn remove_reference(&self, path: &Path) -> Result<(), StoreError> {
+        let path = path.to_string_lossy();
+        let transaction = self.conn.unchecked_transaction()?;
+        for table in ["refs", "shared_paths", "digest_cache"] {
+            transaction.execute(
+                &format!("DELETE FROM {table} WHERE path = ?1"),
+                params![path],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
     }
 
     /// Removes the canonical blob and every registry row for `digest`.
@@ -666,6 +703,17 @@ impl Store {
             });
         }
         Ok(artifacts)
+    }
+
+    /// The stored artifact for `digest`, with its references.
+    ///
+    /// # Errors
+    /// Registry failure.
+    pub fn artifact(&self, digest: &Digest) -> Result<Option<StoredArtifact>, StoreError> {
+        Ok(self
+            .artifacts()?
+            .into_iter()
+            .find(|artifact| artifact.digest == *digest))
     }
 
     /// Stored artifacts whose label or path contains `query` (case-insensitive).
@@ -1057,6 +1105,50 @@ mod tests {
                 .references
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn removing_a_reference_forgets_the_path_but_keeps_the_artifact() {
+        let (dir, store) = store();
+        let (source, digest) = digest_of(b"weights", dir.path());
+        store
+            .import_blob(&source, stamp_of(&source), &digest, None)
+            .expect("import");
+        store
+            .record_reference(&digest, &source, ProviderKind::Manual, None, 1)
+            .expect("ref");
+        store
+            .remember_digest(&source, stamp_of(&source), &digest)
+            .expect("cache");
+
+        store.remove_reference(&source).expect("remove reference");
+
+        let artifact = store.artifact(&digest).expect("query").expect("artifact");
+        assert!(artifact.references.is_empty());
+        assert!(store.live_shared_paths(&digest).expect("live").is_empty());
+        assert_eq!(
+            store
+                .cached_digest(&source, stamp_of(&source))
+                .expect("cache"),
+            None
+        );
+        assert!(store.blob_path(&digest).exists());
+    }
+
+    #[test]
+    fn live_shared_paths_lists_unchanged_clones_only() {
+        let (dir, store) = store();
+        let (source, digest) = digest_of(b"weights", dir.path());
+        store
+            .import_blob(&source, stamp_of(&source), &digest, None)
+            .expect("import");
+
+        assert_eq!(
+            store.live_shared_paths(&digest).expect("live"),
+            std::slice::from_ref(&source)
+        );
+        std::fs::write(&source, b"changed").expect("mutate source");
+        assert!(store.live_shared_paths(&digest).expect("live").is_empty());
     }
 
     #[test]

@@ -75,6 +75,83 @@ pub fn collect(root: &ProviderRoot, min_size: u64, outcome: &mut ScanOutcome) {
     }
 }
 
+/// The `org/name` repo a hub-cache blob belongs to.
+///
+/// Reads it from the path, `<hub>/models--<org>--<name>/blobs/<etag>`;
+/// `None` for any other layout.
+#[must_use]
+pub fn repo_of_blob(blob: &Path) -> Option<String> {
+    let blobs = blob.parent()?;
+    if blobs.file_name()? != "blobs" {
+        return None;
+    }
+    repo_id_from_cache_dir(blobs.parent()?.file_name()?.to_str()?)
+}
+
+/// Every snapshot symlink in the blob's repo that resolves to `blob`.
+///
+/// Links may sit in subfolders of a snapshot (`snapshots/<commit>/onnx/...`).
+/// Comparing resolved paths makes `../../blobs/<etag>` and absolute targets
+/// match alike. A missing blob has no links.
+#[must_use]
+pub fn links_to(blob: &Path) -> Vec<PathBuf> {
+    let Some(repo) = blob.parent().and_then(Path::parent) else {
+        return Vec::new();
+    };
+    let Ok(target) = blob.canonicalize() else {
+        return Vec::new();
+    };
+    let mut links: Vec<PathBuf> = walkdir::WalkDir::new(repo.join("snapshots"))
+        .follow_links(false)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(walkdir::DirEntry::path_is_symlink)
+        .filter(|entry| {
+            entry
+                .path()
+                .canonicalize()
+                .is_ok_and(|resolved| resolved == target)
+        })
+        .map(walkdir::DirEntry::into_path)
+        .collect();
+    links.sort();
+    links
+}
+
+/// Files in a repo's `blobs/` other than `removing`, with their sizes.
+///
+/// In-flight downloads (`*.incomplete`) are included, so a caller deciding
+/// whether the repo folder may go sees them.
+#[must_use]
+pub fn leftovers(repo: &Path, removing: &[PathBuf]) -> Vec<(PathBuf, u64)> {
+    let Ok(entries) = std::fs::read_dir(repo.join("blobs")) else {
+        return Vec::new();
+    };
+    let mut left: Vec<(PathBuf, u64)> = entries
+        .filter_map(Result::ok)
+        .filter(|entry| !removing.contains(&entry.path()))
+        .filter_map(|entry| Some((entry.path(), entry.metadata().ok()?.len())))
+        .collect();
+    left.sort();
+    left
+}
+
+/// The download lock `huggingface_hub` holds while writing `blob`.
+///
+/// `<hub>/.locks/models--<org>--<name>/<etag>.lock`; `None` for any other
+/// layout.
+#[must_use]
+pub fn lock_file(blob: &Path) -> Option<PathBuf> {
+    let etag = blob.file_name()?.to_str()?;
+    let repo = blob.parent()?.parent()?;
+    let hub = repo.parent()?;
+    Some(
+        hub.join(".locks")
+            .join(repo.file_name()?)
+            .join(format!("{etag}.lock")),
+    )
+}
+
 /// Renders a cache dir name like `models--Qwen--Qwen3.5-0.8B` as `Qwen/Qwen3.5-0.8B`.
 fn repo_id_from_cache_dir(dir_name: &str) -> Option<String> {
     let encoded = dir_name.strip_prefix("models--")?;
@@ -200,6 +277,67 @@ mod tests {
             Some("Qwen/Qwen3.5-0.8B")
         );
         assert!(repo_id_from_cache_dir("datasets--meshllm--catalog").is_none());
+    }
+
+    #[test]
+    fn blob_path_names_its_repo() {
+        let blob = Path::new("/hub/models--Qwen--Qwen3.5-0.8B/blobs").join(LFS_HEX);
+
+        assert_eq!(repo_of_blob(&blob).as_deref(), Some("Qwen/Qwen3.5-0.8B"));
+        assert_eq!(
+            repo_of_blob(Path::new("/hub/models--Qwen--X/snapshots/abc/model")),
+            None
+        );
+        assert_eq!(repo_of_blob(Path::new("/elsewhere/blobs/abc")), None);
+    }
+
+    #[test]
+    fn links_to_finds_every_snapshot_link_of_a_blob() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let repo = dir.path().join("models--Qwen--Tiny");
+        std::fs::create_dir_all(repo.join("blobs")).expect("mkdir blobs");
+        let blob = repo.join("blobs").join(LFS_HEX);
+        std::fs::write(&blob, b"weights").expect("write blob");
+        std::fs::write(repo.join("blobs").join(GIT_HEX), b"{}").expect("write config");
+        let first = repo.join("snapshots/aaa");
+        let second = repo.join("snapshots/bbb/onnx");
+        std::fs::create_dir_all(&first).expect("mkdir");
+        std::fs::create_dir_all(&second).expect("mkdir");
+        std::os::unix::fs::symlink(
+            format!("../../blobs/{LFS_HEX}"),
+            first.join("model.safetensors"),
+        )
+        .expect("link");
+        std::os::unix::fs::symlink(
+            format!("../../../blobs/{LFS_HEX}"),
+            second.join("model.onnx"),
+        )
+        .expect("link");
+        std::os::unix::fs::symlink(format!("../../blobs/{GIT_HEX}"), first.join("config.json"))
+            .expect("link");
+
+        let links = links_to(&blob);
+
+        assert_eq!(
+            links,
+            [first.join("model.safetensors"), second.join("model.onnx")]
+        );
+        assert_eq!(
+            leftovers(&repo, &[blob]),
+            [(repo.join("blobs").join(GIT_HEX), 2)]
+        );
+    }
+
+    #[test]
+    fn lock_file_sits_under_the_hub_locks_folder() {
+        let blob = Path::new("/hub/models--Qwen--Tiny/blobs").join(LFS_HEX);
+
+        assert_eq!(
+            lock_file(&blob),
+            Some(PathBuf::from(format!(
+                "/hub/.locks/models--Qwen--Tiny/{LFS_HEX}.lock"
+            )))
+        );
     }
 
     #[test]

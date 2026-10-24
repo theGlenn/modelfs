@@ -4,7 +4,8 @@
 //! a manual `sync`, `dedupe`, `restore`, or `gc`; waiting for that lock ends
 //! early when the daemon is asked to stop. Files still settling are
 //! deferred by the sync step and never reach consolidation; the report says
-//! when the soonest of them settles so the daemon can come back for it.
+//! when the soonest of them settles so the daemon can come back for it. A
+//! finished pass moves the store's [generation](crate::generation) forward.
 
 use crate::sync::{self, SyncReport};
 use modeld_core::consolidate::{Journal, Replacement, Report};
@@ -28,6 +29,20 @@ pub struct PassOptions {
     pub dry_run: bool,
 }
 
+/// Progress of one pass, reported while it runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PassEvent<'a> {
+    /// Another modeld process holds the store lock; the pass waits for it.
+    WaitingForLock,
+    /// The pass holds the store lock; from here on, a stop request no
+    /// longer ends it early.
+    Locked,
+    /// A file is about to be hashed.
+    Hashing { path: &'a Path, size: u64 },
+    /// A duplicate is about to be replaced with a clone of its blob.
+    Cloning { path: &'a Path, size: u64 },
+}
+
 /// What one pass did.
 #[derive(Debug)]
 pub struct PassReport {
@@ -43,8 +58,7 @@ pub struct PassReport {
 /// Runs one pass over the detected roots against the store at `store_root`.
 ///
 /// Returns `None`, having changed nothing, when `stop` was raised before the
-/// store lock came free. `progress` is called with each path before it is
-/// hashed.
+/// store lock came free. `on_event` hears the pass's progress.
 ///
 /// # Errors
 /// Locking or opening the store or its journal failed; nothing was changed.
@@ -53,23 +67,38 @@ pub fn run(
     detection: &Detection,
     options: PassOptions,
     stop: &AtomicBool,
-    progress: impl FnMut(&Path, u64),
+    mut on_event: impl FnMut(PassEvent<'_>),
 ) -> Result<Option<PassReport>, StoreError> {
-    let Some(_lock) =
-        StoreLock::acquire_unless(store_root, LOCK_POLL, || stop.load(Ordering::Relaxed))?
-    else {
+    let Some(_lock) = lock(store_root, stop, &mut on_event)? else {
         return Ok(None);
     };
+    on_event(PassEvent::Locked);
     let store = Store::open(store_root.to_path_buf())?;
     let journal = Journal::open(store_root.join("journal.jsonl"))?;
 
     let scanned = detection.scan(options.min_size);
-    let sync = sync::run(&store, scanned, options.settle, progress);
+    let sync = sync::run(&store, scanned, options.settle, |path, size| {
+        on_event(PassEvent::Hashing { path, size });
+    });
     let planned = crate::consolidation::plan_against_store(&store, &sync.synced);
     let mut warnings = Vec::new();
     let consolidation = (!options.dry_run && !planned.is_empty()).then(|| {
-        crate::consolidation::apply(&store, &journal, &planned, |warning| warnings.push(warning))
+        crate::consolidation::apply(
+            &store,
+            &journal,
+            &planned,
+            |replacement| {
+                on_event(PassEvent::Cloning {
+                    path: &replacement.victim,
+                    size: replacement.size,
+                });
+            },
+            |warning| warnings.push(warning),
+        )
     });
+    if let Err(error) = crate::generation::bump(store_root) {
+        warnings.push(format!("could not update the store generation ({error})"));
+    }
     Ok(Some(PassReport {
         sync,
         planned,
@@ -78,11 +107,32 @@ pub fn run(
     }))
 }
 
+/// Takes the store lock, waiting for it unless `stop` is raised first.
+///
+/// `on_event` hears [`PassEvent::WaitingForLock`] once, when another holder
+/// makes the pass wait.
+fn lock(
+    store_root: &Path,
+    stop: &AtomicBool,
+    on_event: &mut impl FnMut(PassEvent<'_>),
+) -> Result<Option<StoreLock>, StoreError> {
+    let stopped = || stop.load(Ordering::Relaxed);
+    if stopped() {
+        return Ok(None);
+    }
+    if let Some(lock) = StoreLock::try_acquire(store_root)? {
+        return Ok(Some(lock));
+    }
+    on_event(PassEvent::WaitingForLock);
+    StoreLock::acquire_unless(store_root, LOCK_POLL, stopped)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::sync::tests::Fixture;
     use modeld_providers::scan::Skipped;
+    use std::path::PathBuf;
 
     const OPTIONS: PassOptions = PassOptions {
         settle: Duration::from_mins(5),
@@ -103,7 +153,7 @@ mod tests {
             &detection,
             options,
             &RUNNING,
-            |_, _| {},
+            |_| {},
         )
         .expect("pass")
         .expect("not stopped")
@@ -181,7 +231,7 @@ mod tests {
             &broken,
             OPTIONS,
             &RUNNING,
-            |_, _| {},
+            |_| {},
         )
         .expect("pass")
         .expect("not stopped");
@@ -191,12 +241,83 @@ mod tests {
         assert_eq!(artifacts[0].references.len(), 1);
     }
 
+    /// The events of one pass, owned so they outlive it.
+    #[derive(Debug, PartialEq, Eq)]
+    enum Heard {
+        WaitingForLock,
+        Locked,
+        Hashing(PathBuf),
+        Cloning(PathBuf),
+    }
+
+    impl From<PassEvent<'_>> for Heard {
+        fn from(event: PassEvent<'_>) -> Self {
+            match event {
+                PassEvent::WaitingForLock => Self::WaitingForLock,
+                PassEvent::Locked => Self::Locked,
+                PassEvent::Hashing { path, .. } => Self::Hashing(path.to_path_buf()),
+                PassEvent::Cloning { path, .. } => Self::Cloning(path.to_path_buf()),
+            }
+        }
+    }
+
+    #[test]
+    fn pass_reports_locking_hashing_and_cloning_in_order() {
+        let fixture = Fixture::new();
+        let first = fixture.settled_model("a.gguf", b"weights");
+        let second = fixture.settled_model("b.gguf", b"weights");
+        let detection = Detection {
+            roots: vec![fixture.root.clone()],
+            unreadable: vec![],
+        };
+        let mut heard = Vec::new();
+
+        run(
+            &fixture.dir.path().join(".modeld"),
+            &detection,
+            OPTIONS,
+            &RUNNING,
+            |event| heard.push(Heard::from(event)),
+        )
+        .expect("pass")
+        .expect("not stopped");
+
+        assert_eq!(heard[0], Heard::Locked);
+        let hashed: Vec<&Heard> = heard
+            .iter()
+            .filter(|event| matches!(event, Heard::Hashing(_)))
+            .collect();
+        assert_eq!(hashed.len(), 2, "{heard:?}");
+        let cloned = heard.last().expect("events");
+        assert!(
+            *cloned == Heard::Cloning(first) || *cloned == Heard::Cloning(second),
+            "{heard:?}"
+        );
+    }
+
+    #[test]
+    fn finished_pass_moves_the_store_generation_forward() {
+        let fixture = Fixture::new();
+        let generation = fixture.dir.path().join(".modeld/generation");
+
+        pass(&fixture, OPTIONS);
+        let first = std::fs::read_to_string(&generation).expect("first generation");
+        pass(&fixture, OPTIONS);
+
+        assert_ne!(
+            std::fs::read_to_string(&generation).expect("second generation"),
+            first
+        );
+    }
+
     #[test]
     fn pass_waits_for_a_held_store_lock() {
         let fixture = Fixture::new();
         let store_root = fixture.dir.path().join(".modeld");
         let held = StoreLock::acquire(&store_root).expect("hold lock");
         let (done_tx, done_rx) = std::sync::mpsc::channel();
+
+        let (waiting_tx, waiting_rx) = std::sync::mpsc::channel();
 
         let pass_root = store_root.clone();
         let pass = std::thread::spawn(move || {
@@ -205,15 +326,21 @@ mod tests {
                 &Detection::default(),
                 OPTIONS,
                 &RUNNING,
-                |_, _| {},
+                |event| {
+                    if event == PassEvent::WaitingForLock {
+                        waiting_tx.send(()).expect("send");
+                    }
+                },
             );
             done_tx.send(matches!(report, Ok(Some(_)))).expect("send");
         });
 
+        let waited = waiting_rx.recv_timeout(Duration::from_secs(5));
         let early = done_rx.recv_timeout(Duration::from_millis(200));
         drop(held);
         pass.join().expect("pass thread");
 
+        assert_eq!(waited, Ok(()), "pass never said it was waiting");
         assert!(early.is_err(), "pass ran while the lock was held");
         assert_eq!(done_rx.recv(), Ok(true));
     }
@@ -233,7 +360,7 @@ mod tests {
                 &Detection::default(),
                 OPTIONS,
                 &pass_stop,
-                |_, _| {},
+                |_| {},
             );
             done_tx.send(matches!(report, Ok(None))).expect("send");
         });

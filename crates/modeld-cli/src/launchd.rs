@@ -9,8 +9,11 @@
 //!
 //! launchd does not inherit the shell environment, so `HOME` and the
 //! model-location variables set at install time (`HF_HOME`, `HF_HUB_CACHE`,
-//! `OLLAMA_MODELS`) are written into the agent explicitly.
+//! `OLLAMA_MODELS`) are written into the agent explicitly. [`installed_agent`]
+//! reads them back, so other callers (the Mac app) can scan the same folders.
 
+use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -21,6 +24,9 @@ pub const LABEL: &str = "dev.modeld.daemon";
 
 /// Variables that move provider caches; copied into the agent when set.
 const MODEL_ENV_VARS: [&str; 3] = ["HF_HOME", "HF_HUB_CACHE", "OLLAMA_MODELS"];
+
+/// How many log lines `daemon status` shows.
+pub const RECENT_LOG_LINES: usize = 5;
 
 /// Seconds launchd waits after SIGTERM before SIGKILL: long enough for a pass
 /// hashing a large new download to finish and journal cleanly.
@@ -62,6 +68,51 @@ pub struct AgentStatus {
     pub installed: bool,
     pub loaded: bool,
     pub pid: Option<u32>,
+}
+
+/// The agent's lifecycle state, from not installed to running.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentState {
+    Running {
+        pid: u32,
+    },
+    /// Loaded into launchd, but no process right now.
+    Loaded,
+    /// The plist exists but is not loaded; it starts at the next login.
+    Installed,
+    NotInstalled,
+}
+
+impl AgentStatus {
+    /// Collapses the status into one lifecycle state.
+    #[must_use]
+    pub fn state(&self) -> AgentState {
+        match (self.installed, self.loaded, self.pid) {
+            (_, true, Some(pid)) => AgentState::Running { pid },
+            (_, true, None) => AgentState::Loaded,
+            (true, false, _) => AgentState::Installed,
+            (false, false, _) => AgentState::NotInstalled,
+        }
+    }
+}
+
+/// What the installed agent's plist says it runs, and with which variables.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InstalledAgent {
+    /// Arguments after the binary, starting with `daemon`.
+    pub arguments: Vec<String>,
+    pub environment: BTreeMap<String, String>,
+}
+
+/// The last pass the daemon logged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LastPass<'a> {
+    /// The log line's RFC 3339 UTC timestamp, such as `2026-09-23T21:45:21Z`.
+    pub at: &'a str,
+    /// The logged outcome, such as `pass: nothing new`.
+    pub summary: &'a str,
+    /// The pass could not run (`pass failed: ...`).
+    pub failed: bool,
 }
 
 /// Installs (or updates) the agent for `home` and starts it now.
@@ -112,6 +163,87 @@ pub fn status(home: &Path) -> AgentStatus {
         loaded: printed.is_some(),
         pid: printed.and_then(|output| parse_pid(&String::from_utf8_lossy(&output.stdout))),
     }
+}
+
+/// Reads the installed agent's arguments and environment from its plist.
+///
+/// Returns `None` when no agent is installed or its plist cannot be read.
+#[must_use]
+pub fn installed_agent(home: &Path) -> Option<InstalledAgent> {
+    read_agent_definition(&AgentPaths::for_home(home).plist)
+}
+
+/// Whether the agent's binary copy has the same bytes as the running modeld.
+///
+/// `None` when either binary cannot be read, as when no agent was installed.
+/// A mismatch means `install` would update the agent.
+#[must_use]
+pub fn binary_matches_current(home: &Path) -> Option<bool> {
+    let current = std::env::current_exe().ok()?;
+    files_match(&AgentPaths::for_home(home).binary, &current)
+}
+
+/// The last `pass: ...` or `pass failed: ...` line in the daemon log.
+#[must_use]
+pub fn last_pass(log: &str) -> Option<LastPass<'_>> {
+    log.lines().rev().find_map(|line| {
+        let (at, message) = line.split_once(' ')?;
+        let failed = message.starts_with("pass failed: ");
+        (failed || message.starts_with("pass: ")).then_some(LastPass {
+            at,
+            summary: message,
+            failed,
+        })
+    })
+}
+
+/// The last `count` lines of the daemon log.
+#[must_use]
+pub fn recent_lines(log: &str, count: usize) -> Vec<&str> {
+    let lines: Vec<&str> = log.lines().collect();
+    lines[lines.len().saturating_sub(count)..].to_vec()
+}
+
+/// Converts a plist to JSON with `plutil` and reads the agent's fields.
+fn read_agent_definition(plist: &Path) -> Option<InstalledAgent> {
+    /// The plist keys `render_plist` writes that callers read back.
+    #[derive(Deserialize)]
+    #[serde(rename_all = "PascalCase")]
+    struct Definition {
+        #[serde(default)]
+        program_arguments: Vec<String>,
+        #[serde(default)]
+        environment_variables: BTreeMap<String, String>,
+    }
+
+    if !plist.is_file() {
+        return None;
+    }
+    let output = Command::new("/usr/bin/plutil")
+        .args(["-convert", "json", "-o", "-"])
+        .arg(plist)
+        .output()
+        .ok()
+        .filter(|output| output.status.success())?;
+    let definition: Definition = serde_json::from_slice(&output.stdout).ok()?;
+    Some(InstalledAgent {
+        arguments: definition.program_arguments.into_iter().skip(1).collect(),
+        environment: definition.environment_variables,
+    })
+}
+
+/// Whether two files hold the same bytes; `None` if either is unreadable.
+fn files_match(a: &Path, b: &Path) -> Option<bool> {
+    let (a_len, b_len) = (
+        std::fs::metadata(a).ok()?.len(),
+        std::fs::metadata(b).ok()?.len(),
+    );
+    if a_len != b_len {
+        return Some(false);
+    }
+    let a_digest = modeld_core::Digest::sha256_file(a).ok()?;
+    let b_digest = modeld_core::Digest::sha256_file(b).ok()?;
+    Some(a_digest == b_digest)
 }
 
 /// Unloads the agent if loaded, waiting until launchd has let it go.
@@ -363,6 +495,93 @@ mod tests {
             daemon_arguments(true, 42),
             ["daemon", "--dry-run", "--min-size", "42"]
         );
+    }
+
+    #[test]
+    fn installed_definition_reads_back_what_install_wrote() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = dir.path().join("agent.plist");
+        std::fs::write(&path, render_plist(&agent())).expect("write plist");
+
+        let installed = read_agent_definition(&path).expect("readable plist");
+
+        assert_eq!(installed.arguments, ["daemon"]);
+        assert_eq!(
+            installed.environment.get("HF_HOME").map(String::as_str),
+            Some("/Volumes/models & more/hf")
+        );
+        assert_eq!(
+            read_agent_definition(&dir.path().join("missing.plist")),
+            None
+        );
+    }
+
+    #[test]
+    fn binaries_match_only_with_identical_bytes() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let write = |name: &str, bytes: &[u8]| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, bytes).expect("write binary");
+            path
+        };
+        let (a, same, other) = (write("a", b"v1"), write("b", b"v1"), write("c", b"v2"));
+
+        assert_eq!(files_match(&a, &same), Some(true));
+        assert_eq!(files_match(&a, &other), Some(false));
+        assert_eq!(files_match(&a, &dir.path().join("missing")), None);
+    }
+
+    #[test]
+    fn last_pass_is_the_latest_pass_line() {
+        let log = "2026-09-23T21:40:02Z daemon started\n\
+                   2026-09-23T21:40:03Z pass: nothing new\n\
+                   2026-09-23T21:45:03Z hashing /m/a.gguf (2.6 GB)\n\
+                   2026-09-23T21:45:21Z pass: 1 clone(s) made (2.6 GB freed)\n\
+                   2026-09-23T21:46:00Z watching /m\n";
+
+        assert_eq!(
+            last_pass(log),
+            Some(LastPass {
+                at: "2026-09-23T21:45:21Z",
+                summary: "pass: 1 clone(s) made (2.6 GB freed)",
+                failed: false,
+            })
+        );
+        assert_eq!(last_pass("2026-09-23T21:40:02Z daemon started\n"), None);
+    }
+
+    #[test]
+    fn failed_pass_counts_as_the_last_pass() {
+        let log = "2026-09-23T21:40:03Z pass: nothing new\n\
+                   2026-09-23T21:41:03Z pass failed: registry error: locked\n";
+
+        let last = last_pass(log).expect("pass line");
+
+        assert!(last.failed);
+        assert_eq!(last.at, "2026-09-23T21:41:03Z");
+    }
+
+    #[test]
+    fn recent_lines_keep_the_tail() {
+        assert_eq!(recent_lines("a\nb\nc\n", 2), ["b", "c"]);
+        assert_eq!(recent_lines("a\n", 5), ["a"]);
+    }
+
+    #[test]
+    fn agent_state_collapses_the_status() {
+        let status = |installed, loaded, pid| AgentStatus {
+            installed,
+            loaded,
+            pid,
+        };
+
+        assert_eq!(
+            status(true, true, Some(7)).state(),
+            AgentState::Running { pid: 7 }
+        );
+        assert_eq!(status(true, true, None).state(), AgentState::Loaded);
+        assert_eq!(status(true, false, None).state(), AgentState::Installed);
+        assert_eq!(status(false, false, None).state(), AgentState::NotInstalled);
     }
 
     #[test]
