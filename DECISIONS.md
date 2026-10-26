@@ -87,7 +87,8 @@ and shown by `ls`; they never influence deduplication.
 | Ollama | `blobs/`, labeled from `manifests/` | partial downloads (`-partial` names) |
 | Hugging Face | `models--*/blobs/`, labeled from `snapshots/` | `.incomplete` downloads, datasets, spaces, the Xet chunk cache |
 | LM Studio | `models/` | `.internal/` (app state and staging downloads), `hub/` |
-| Your folders | `[scan] roots` globs in `~/.modeld/config.toml` | files not recognized as GGUF or safetensors |
+| Xybrid | Model files under `~/.xybrid`, including `.xyb` bundles | `cache/precompiled`, `cache/xcframework`, `cache/ort-ios`, `traces`, sidecars |
+| Your folders | `[scan] roots` globs in `~/.modeld/config.toml` | files not recognized as model formats |
 
 The Xet directory is a transfer cache of chunks, not model storage, so it is
 never scanned or modified. Each provider's on-disk layout is documented in
@@ -104,6 +105,9 @@ Scanning rules:
   Hardlinks stay separate artifacts.
 - **The store is never scanned as one of your folders.** A broad glob such
   as `~/*` would otherwise record the store's own blobs as copies.
+- **App exclusions also apply to overlapping folders.** Watching a broad parent
+  folder cannot re-import Xet chunks, app staging folders, Xybrid runtime caches,
+  or traces through a user-configured root.
 - **Unreadable files do not stop a scan.** Each becomes a *skip* with a reason,
   because a live machine has files being downloaded, moved, and deleted while
   it is scanned.
@@ -191,7 +195,7 @@ files still share the blocks.
 
 Every command that changes files, blobs, the registry, or the journal holds
 the store lock (`flock(2)` on `~/.modeld/lock`): `sync`, `dedupe`, `restore`,
-`gc`, `pass`, and each daemon pass. The journal is rewritten whole on every
+`gc`, `pass`, `watch`, and each daemon pass. The journal is rewritten whole on every
 append, so two unlocked writers could drop an entry and leave a swap
 impossible to undo.
 
@@ -398,7 +402,7 @@ and keeps running.
   changing one bumps it. [`schema/README.md`](schema/README.md) has the rules,
   and `schema/v1/` has example output that the Rust tests compare against and
   the app's tests decode.
-- **Only what the app runs.** `doctor`, `ls`, `pass`, `rm`, and `daemon
+- **Only what the app runs.** `doctor`, `ls`, `watch`, `pass`, `rm`, and `daemon
   install`, `uninstall`, and `status` have JSON output. Other commands
   refuse `--json`. Text output is unchanged.
 - **A reader that quits never stops a pass.** With `--json` (and for every
@@ -429,6 +433,13 @@ and keeps running.
 A SwiftUI menu bar app (`app/`, a Swift package) shows the inventory and runs
 passes. It is a viewer and a remote control for the engine; every decision
 about files stays in `modeld`.
+
+Models default to a grouped table of named variants, with a persisted Flat
+option. Each leaf keeps its digest and per-model removal plan; a group is a
+view summary, never a removal target. Duplicates use one card per digest.
+Background service lists known apps separately from expandable watched folders.
+The folder picker runs `modeld watch`: it only updates configuration, then
+offers an explicit scan. Adding a folder never starts deduplication itself.
 
 - **The engine is bundled and run as a subprocess.** `scripts/build-app.sh`
   puts the `modeld` it builds at `ModelFS.app/Contents/MacOS/modeld`, so the

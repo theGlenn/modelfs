@@ -11,6 +11,7 @@ pub mod huggingface;
 pub mod lmstudio;
 pub mod ollama;
 pub mod scan;
+pub mod xybrid;
 
 /// A detected provider installation: the directory subtree modeld may scan.
 #[derive(Debug, Clone)]
@@ -64,6 +65,7 @@ fn detect_in(home: &Path) -> Detection {
             ollama::detect(&home),
             huggingface::detect(&home),
             lmstudio::detect(&home),
+            xybrid::detect(&home),
         ]
         .into_iter()
         .flatten(),
@@ -79,7 +81,50 @@ fn detect_in(home: &Path) -> Detection {
             untrackable: false,
         }),
     }
+    let protected: Vec<_> = huggingface::excluded(&home)
+        .into_iter()
+        .chain(lmstudio::excluded(&home))
+        .chain(xybrid::excluded(&home))
+        .collect();
+    protect_manual_roots(&mut detection.roots, &protected);
     detection
+}
+
+/// A broad configured folder must not re-enter an app's protected subtrees.
+///
+/// Provider paths may use a home-folder alias while Manual roots are canonical.
+/// Resolve existing parents as well as existing exclusions: a not-yet-created
+/// runtime cache must stay excluded when it appears during a later scan.
+fn protect_manual_roots(roots: &mut [ProviderRoot], extra: &[PathBuf]) {
+    let protected: Vec<_> = roots
+        .iter()
+        .filter(|root| root.kind != ProviderKind::Manual)
+        .flat_map(|root| &root.excluded)
+        .chain(extra)
+        .map(|path| canonical_prefix(path))
+        .collect();
+    for root in roots
+        .iter_mut()
+        .filter(|root| root.kind == ProviderKind::Manual)
+    {
+        root.excluded.extend(
+            protected
+                .iter()
+                .filter(|path| path.starts_with(&root.root) || root.root.starts_with(path))
+                .cloned(),
+        );
+        root.excluded.sort();
+        root.excluded.dedup();
+    }
+}
+
+fn canonical_prefix(path: &Path) -> PathBuf {
+    for ancestor in path.ancestors() {
+        if let Ok(canonical) = ancestor.canonicalize() {
+            return canonical.join(path.strip_prefix(ancestor).unwrap_or(path));
+        }
+    }
+    path.to_path_buf()
 }
 
 pub(crate) fn home_dir() -> PathBuf {
@@ -112,5 +157,57 @@ mod tests {
 
         assert!(detection.unreadable.is_empty());
         assert!(detection.scan(1).skipped.is_empty());
+    }
+
+    #[test]
+    fn broad_manual_roots_keep_app_exclusions_even_before_the_cache_exists() {
+        let home = tempfile::tempdir().expect("home");
+        let canonical_home = home.path().canonicalize().expect("canonical home");
+        let hub = home.path().join(".cache/huggingface/hub");
+        std::fs::create_dir_all(&hub).expect("hub");
+        let lm_models = home.path().join(".lmstudio/models");
+        std::fs::create_dir_all(&lm_models).expect("LM models");
+        let xybrid = home.path().join(".xybrid");
+        std::fs::create_dir_all(&xybrid).expect("Xybrid");
+        let mut roots = vec![
+            ProviderRoot {
+                kind: ProviderKind::HuggingFace,
+                root: hub,
+                excluded: vec![home.path().join(".cache/huggingface/xet")],
+                label_prefix: None,
+            },
+            lmstudio::detect(home.path()).expect("LM Studio"),
+            xybrid::detect(home.path()).expect("Xybrid"),
+            ProviderRoot {
+                kind: ProviderKind::Manual,
+                root: canonical_home.clone(),
+                excluded: vec![canonical_home.join(".modeld")],
+                label_prefix: None,
+            },
+        ];
+        protect_manual_roots(&mut roots, &[]);
+        // These caches did not exist when the exclusions were propagated.
+        for relative in [
+            ".cache/huggingface/xet/chunk.gguf",
+            ".lmstudio/.internal/staging.gguf",
+            ".lmstudio/hub/transfer.gguf",
+            ".xybrid/cache/precompiled/runtime.bin",
+            ".xybrid/cache/xcframework/test/model.gguf",
+            ".xybrid/cache/ort-ios/test/model.onnx",
+            ".xybrid/traces/trace.gguf",
+            ".modeld/blobs/stored.gguf",
+            "models/allowed.gguf",
+        ] {
+            let path = home.path().join(relative);
+            std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+            std::fs::write(path, b"model content").expect("write");
+        }
+        let outcome = scan::scan(&roots, 1);
+        assert!(outcome.skipped.is_empty());
+        assert_eq!(outcome.artifacts.len(), 1);
+        assert_eq!(
+            outcome.artifacts[0].path,
+            canonical_home.join("models/allowed.gguf")
+        );
     }
 }

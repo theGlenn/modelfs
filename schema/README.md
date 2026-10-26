@@ -2,7 +2,7 @@
 
 `modeld --json` writes [JSON Lines](https://jsonlines.org) to stdout: one
 JSON object per line. The Mac app reads it; scripts can too. The commands with
-JSON output are `doctor`, `ls`, `pass`, `rm`, and `daemon install`,
+JSON output are `doctor`, `ls`, `watch`, `pass`, `rm`, and `daemon install`,
 `uninstall`, and `status`. Any other command given `--json` fails with the
 error code `unsupported`.
 
@@ -49,7 +49,17 @@ wait in a bounded queue and are dropped when it is full. The `result` or
 `store_unavailable`, `registry_unreadable`, `pass_failed`, `cancelled`,
 `install_failed`, `uninstall_failed`, `unsupported`,
 `confirmation_required` (`rm --json` without `--expect-plan` or `--yes`),
-`remove_failed`.
+`remove_failed`, `watch_failed`.
+
+## Watching a folder
+
+`watch <folder> --json` validates an existing directory and saves its canonical
+absolute path in `~/.modeld/config.toml`. Its result contains `path`, `config`
+(the config file path), and `added` (`false` when already configured). It
+preserves comments and other settings, writes atomically under the store lock,
+and does not scan or change model files. The running daemon detects the config
+change and reloads its roots. Invalid folders, unreadable or invalid configs,
+and a busy store produce `watch_failed` with a recovery message.
 
 ## Removing
 

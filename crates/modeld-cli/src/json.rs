@@ -170,6 +170,8 @@ pub enum ErrorCode {
     ConfirmationRequired,
     /// A removal could not start.
     RemoveFailed,
+    /// A watched folder could not be added.
+    WatchFailed,
 }
 
 /// The payload of an error line.
@@ -235,6 +237,16 @@ pub struct Root {
     pub provider: String,
     pub path: String,
     pub excluded: Vec<String>,
+}
+
+/// `watch`: a folder saved in the scan configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Watch {
+    /// Canonical absolute path of the watched folder.
+    pub path: String,
+    /// False when the folder was already configured.
+    pub added: bool,
+    pub config: String,
 }
 
 /// A path paired with why it was left out.
@@ -308,7 +320,7 @@ pub struct Stored {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Reference {
     pub path: String,
-    /// `ollama`, `huggingface`, `lmstudio`, or `manual` (your folders).
+    /// `ollama`, `huggingface`, `lmstudio`, `xybrid`, or `manual` (your folders).
     pub provider: String,
     pub label: Option<String>,
     /// Where it came from, in the app's terms: the Hugging Face repo, the
@@ -872,6 +884,17 @@ mod tests {
     const HOME: &str = "/Users/me";
     const QWEN: &str = "sha256:04b1c301231dd422b8860db31311ab2721511346a32cb1e079c4c4e5f1fe4696";
     const MINILM: &str = "sha256:797b70c4edf85907fe0a49eb85811256f65fa0f7bf52166b147fd16be2be4662";
+
+    #[test]
+    fn watch_fixture_matches_the_format() {
+        let rendered = pretty(&result(Watch {
+            path: format!("{HOME}/models"),
+            added: true,
+            config: format!("{HOME}/.modeld/config.toml"),
+        }));
+        assert_fixture("watch.json", &rendered);
+        assert_round_trips::<Watch>(&rendered);
+    }
 
     fn space(on_disk: u64, saved: u64, pending: u64, store_only: u64, logical: u64) -> Space {
         Space {

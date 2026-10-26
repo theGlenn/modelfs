@@ -33,29 +33,58 @@ struct BackgroundServiceView: View {
             }
 
             SwiftUI.Section {
-                if let doctor = model.doctor {
-                    ForEach(doctor.roots) { root in
-                        LabeledContent {
-                            Text(root.path)
-                                .font(.callout.monospaced())
-                                .textSelection(.enabled)
-                        } label: {
-                            Label(root.provider.displayName, systemImage: root.provider.symbol)
+                ForEach([Provider.ollama, .huggingface, .lmstudio, .xybrid], id: \.self) { provider in
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            ProviderLabel(provider: provider)
+                                .fontWeight(.medium)
+                            Spacer()
+                            if appRoots(for: provider).isEmpty {
+                                Text("Not found").foregroundStyle(.secondary)
+                            }
+                        }
+                        ForEach(appRoots(for: provider)) { root in
+                            folderPath(root.path)
                         }
                     }
-                    ForEach(doctor.unreadable) { problem in
+                    .padding(.vertical, 3)
+                }
+            } header: {
+                Text("Apps")
+            } footer: {
+                Text("Model folders are found automatically when these apps have downloaded models.")
+            }
+
+            SwiftUI.Section {
+                HStack {
+                    Text("\(folderRoots.count) watched \(folderRoots.count == 1 ? "folder" : "folders")")
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    AddFolderButton()
+                }
+                if folderRoots.isEmpty {
+                    Text("Add a folder to find models outside your apps. Subfolders are included.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+            } header: {
+                Text("Folders")
+            }
+
+            ForEach(folderRoots) { root in
+                SwiftUI.Section {
+                    WatchedFolderCard(root: root, indexedFiles: indexedFiles(in: root.path))
+                }
+            }
+
+            if let problems = model.doctor?.unreadable, !problems.isEmpty {
+                SwiftUI.Section("Folders that could not be read") {
+                    ForEach(problems) { problem in
                         Label("\(problem.path): \(problem.reason)", systemImage: "exclamationmark.triangle")
                             .foregroundStyle(.orange)
-                    }
-                    if doctor.roots.isEmpty {
-                        Text("No model folders found.").foregroundStyle(.secondary)
+                            .textSelection(.enabled)
                     }
                 }
-                Text(environmentNote)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            } header: {
-                Text("Model folders")
             }
 
             if let log = model.daemon?.recentLog, !log.isEmpty {
@@ -92,21 +121,92 @@ struct BackgroundServiceView: View {
         }
     }
 
-    private var environmentNote: String {
-        guard let environment = model.environment else { return "" }
-        let variables = environment.variables
-            .sorted { $0.key < $1.key }
-            .map { "\($0.key)=\($0.value)" }
-            .joined(separator: ", ")
-        let source = switch environment.source {
-        case .backgroundService: "the background service's settings"
-        case .loginShell: "your login shell"
-        case .unavailable: "nowhere yet: your login shell could not be read"
+    private var folderRoots: [ScanRoot] {
+        (model.doctor?.roots ?? []).filter { $0.provider == .manual }
+            .sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
+    }
+
+    private func appRoots(for provider: Provider) -> [ScanRoot] {
+        (model.doctor?.roots ?? []).filter { $0.provider == provider }
+    }
+
+    private func indexedFiles(in path: String) -> Int {
+        let prefix = path.hasSuffix("/") ? path : path + "/"
+        let paths = (model.inventory?.models ?? []).flatMap(\.presentReferences)
+            .filter { $0.path.hasPrefix(prefix) }
+            .map(\.path)
+        return Set(paths).count
+    }
+
+    private func folderPath(_ path: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text(path)
+                .font(.callout.monospaced())
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+            Button { revealInFinder(path) } label: {
+                Image(systemName: "arrow.up.right.square")
+            }
+            .buttonStyle(.borderless)
+            .help("Reveal app folder in Finder")
+            .accessibilityLabel("Reveal app folder in Finder")
         }
-        if variables.isEmpty {
-            return "Folder locations come from \(source); no HF_HOME, HF_HUB_CACHE, or OLLAMA_MODELS is set."
+        .padding(.leading, 26)
+    }
+
+}
+
+/// A folder's details stay folded until they are needed.
+private struct WatchedFolderCard: View {
+    let root: ScanRoot
+    let indexedFiles: Int
+    @State private var expanded = false
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $expanded) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(root.path)
+                    .font(.callout.monospaced())
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("Subfolders are included. New downloads are indexed after they finish settling.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                if !root.excluded.isEmpty {
+                    Text("Excluded: \(root.excluded.joined(separator: ", "))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+                Button("Reveal in Finder") { revealInFinder(root.path) }
+                    .controlSize(.small)
+            }
+            .padding(.top, 8)
+            .padding(.bottom, 4)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "folder")
+                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(fileName(root.path)).fontWeight(.medium)
+                    Text(root.path)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(root.path)
+                }
+                Spacer(minLength: 8)
+                Text("\(indexedFiles) indexed \(indexedFiles == 1 ? "file" : "files")")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize()
+            }
+            .padding(.vertical, 4)
         }
-        return "Folder locations come from \(source): \(variables)."
     }
 }
 

@@ -8,18 +8,37 @@ struct FakeEngine {
     let directory: TemporaryDirectory
     let script: URL
     let log: URL
+    let calls: URL
 
     init() throws {
         directory = try TemporaryDirectory()
         script = directory.url.appending(path: "modeld")
         log = directory.url.appending(path: "signals.log")
+        calls = directory.url.appending(path: "calls.log")
         let body = #"""
         #!/bin/bash
         fixtures=$(dirname "$FAKE_FIXTURE")
+        printf '%s\n' "$@" >> "$FAKE_CALLS"
         case "$1" in
           ls) tr -d '\n' < "$fixtures/ls.json"; echo; exit 0 ;;
-          doctor) tr -d '\n' < "$fixtures/doctor.json"; echo; exit 0 ;;
+          doctor)
+            if test -f "$FAKE_WATCHED"; then
+              echo '{"type":"result","schema":1,"result":{"store":"/home/.modeld","roots":[{"provider":"manual","path":"/custom/folder","excluded":[]}],"unreadable":[]}}'
+            else
+              tr -d '\n' < "$fixtures/doctor.json"; echo
+            fi
+            exit 0 ;;
           daemon) tr -d '\n' < "$fixtures/daemon-status.json"; echo; exit 0 ;;
+          watch)
+            if test "$FAKE_MODE" = "watch-error"; then
+              echo '{"type":"error","schema":1,"error":{"code":"watch_failed","message":"folder cannot be read"}}'
+              exit 1
+            fi
+            touch "$FAKE_WATCHED"
+            added=true
+            if test "$FAKE_MODE" = "watch-existing"; then added=false; fi
+            printf '{"type":"result","schema":1,"result":{"path":"/custom/folder","added":%s,"config":"/home/.modeld/config.toml"}}\n' "$added"
+            exit 0 ;;
         esac
         locked='{"type":"event","schema":1,"event":{"kind":"locked"}}'
         waiting='{"type":"event","schema":1,"event":{"kind":"waiting_for_lock"}}'
@@ -44,7 +63,7 @@ struct FakeEngine {
             echo "$locked"
             echo '{"type":"error","schema":1,"error":{"code":"pass_failed","message":"pass failed: disk full"}}'
             exit 1 ;;
-          result) echo "$locked"; echo "$result" ;;
+          result|watch-existing) echo "$locked"; echo "$result" ;;
           error) echo '{"type":"error","schema":1,"error":{"code":"store_unavailable","message":"cannot open store"}}'; exit 1 ;;
           crash) echo "thread 'main' panicked" >&2; exit 101 ;;
           garbage) echo "not json"; exit 0 ;;
@@ -83,11 +102,17 @@ struct FakeEngine {
             "FAKE_MODE": mode,
             "FAKE_FIXTURE": schemaDirectory.appending(path: "pass.jsonl").path,
             "FAKE_LOG": log.path,
+            "FAKE_CALLS": calls.path,
+            "FAKE_WATCHED": directory.url.appending(path: "watched").path,
         ]
     }
 
     var signals: String {
         (try? String(contentsOf: log, encoding: .utf8)) ?? ""
+    }
+
+    var arguments: [String] {
+        ((try? String(contentsOf: calls, encoding: .utf8)) ?? "").split(separator: "\n").map(String.init)
     }
 }
 

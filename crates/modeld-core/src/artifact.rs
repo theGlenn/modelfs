@@ -13,6 +13,8 @@ pub enum ProviderKind {
     /// NOT a provider — it is excluded from scanning entirely (see providers/xet.md).
     HuggingFace,
     LmStudio,
+    /// Xybrid's local model cache under `~/.xybrid`.
+    Xybrid,
     /// User-managed loose files (e.g. `~/models/*.gguf`) found via configured extra roots.
     Manual,
 }

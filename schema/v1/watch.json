@@ -1,0 +1,9 @@
+{
+  "type": "result",
+  "schema": 1,
+  "result": {
+    "path": "/Users/me/models",
+    "added": true,
+    "config": "/Users/me/.modeld/config.toml"
+  }
+}

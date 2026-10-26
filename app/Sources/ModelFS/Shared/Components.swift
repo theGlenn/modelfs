@@ -1,6 +1,63 @@
 import ModelFSKit
 import SwiftUI
 
+/// Provider identity, including Hugging Face's familiar emoji.
+struct ProviderIcon: View {
+    let provider: Provider
+
+    var body: some View {
+        Group {
+            if provider == .huggingface {
+                Text("🤗")
+            } else {
+                Image(systemName: provider.symbol)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: 18)
+        .accessibilityHidden(true)
+    }
+}
+
+struct ProviderLabel: View {
+    let provider: Provider
+    var compact = false
+
+    var body: some View {
+        Label {
+            Text(compact ? provider.shortName : provider.displayName)
+        } icon: {
+            ProviderIcon(provider: provider)
+        }
+    }
+}
+
+/// Uses the system folder picker, then asks the engine to persist the watch.
+struct AddFolderButton: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        Button {
+            let panel = NSOpenPanel()
+            panel.title = "Watch a model folder"
+            panel.message = "ModelFS will look for model files in this folder and its subfolders."
+            panel.prompt = "Watch folder"
+            panel.canChooseDirectories = true
+            panel.canChooseFiles = false
+            panel.allowsMultipleSelection = false
+            panel.begin { response in
+                if response == .OK, let folder = panel.url {
+                    model.watchFolder(folder)
+                }
+            }
+        } label: {
+            Label("Add folder…", systemImage: "folder.badge.plus")
+        }
+        .disabled(model.activity.isBusy || !model.canChangeFiles)
+        .help("Choose a folder for ModelFS to watch for model files.")
+    }
+}
+
 /// The three numbers that matter: saved, can be freed, kept only by the store.
 struct SpaceFigures: View {
     let space: Space
@@ -99,6 +156,8 @@ struct ActivityLine: View {
             busy("Turning off the background service…")
         case .removing(let name):
             busy("Removing \(name)…")
+        case .addingFolder:
+            busy("Adding the watched folder…")
         }
     }
 

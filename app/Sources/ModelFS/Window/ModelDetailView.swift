@@ -130,7 +130,7 @@ private struct CopyRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Label(reference.provider.displayName, systemImage: reference.provider.symbol)
+                ProviderLabel(provider: reference.provider)
                     .fontWeight(.medium)
                 Spacer()
                 Badge(text: reference.state.label, tint: reference.state.tint)

@@ -24,6 +24,9 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 signal-hook.workspace = true
+glob.workspace = true
+tempfile.workspace = true
+toml_edit = "0.22"
 walkdir.workspace = true
 
 [dev-dependencies]

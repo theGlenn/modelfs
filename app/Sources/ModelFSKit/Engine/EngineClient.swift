@@ -18,6 +18,11 @@ public struct EngineClient: Sendable {
         try await run(["doctor"])
     }
 
+    /// Adds a folder to the persistent scan configuration; model files do not change.
+    public func watchFolder(_ folder: URL) async throws(EngineError) -> WatchResult {
+        try await run(["watch", folder.path])
+    }
+
     /// Every stored model and where its copies stand.
     public func inventory() async throws(EngineError) -> Inventory {
         try await run(["ls"])

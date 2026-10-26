@@ -396,6 +396,7 @@ name = "modeld-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "glob",
  "hex",
  "libc",
  "modeld-core",
@@ -408,6 +409,7 @@ dependencies = [
  "sha2",
  "signal-hook",
  "tempfile",
+ "toml_edit",
  "walkdir",
 ]
 

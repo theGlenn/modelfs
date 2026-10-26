@@ -66,6 +66,7 @@ public struct EngineFailure: Decodable, Sendable, Equatable {
         case unsupported
         case confirmationRequired = "confirmation_required"
         case removeFailed = "remove_failed"
+        case watchFailed = "watch_failed"
         case unknown
     }
 }

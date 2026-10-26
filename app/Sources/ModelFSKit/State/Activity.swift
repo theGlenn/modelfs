@@ -6,6 +6,7 @@ public enum Activity: Sendable, Equatable {
     case pass(PassProgress)
     case installingService
     case removingService
+    case addingFolder
     /// Removing a model; it cannot be cancelled once started.
     case removing(name: String)
 

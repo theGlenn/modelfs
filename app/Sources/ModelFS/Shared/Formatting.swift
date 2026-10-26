@@ -15,6 +15,7 @@ extension Provider {
         case .ollama: "Ollama"
         case .huggingface: "Hugging Face"
         case .lmstudio: "LM Studio"
+        case .xybrid: "Xybrid"
         case .manual: "Your folders"
         case .unknown: "Other"
         }
@@ -30,6 +31,7 @@ extension Provider {
         case .ollama: "cube"
         case .huggingface: "face.smiling"
         case .lmstudio: "macwindow"
+        case .xybrid: "square.stack.3d.up"
         case .manual: "folder"
         case .unknown: "questionmark.folder"
         }

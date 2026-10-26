@@ -11,7 +11,7 @@ import Testing
             names == [
                 "daemon-install.json", "daemon-status.json", "daemon-uninstall.json",
                 "doctor.json", "error.json", "ls.json", "pass.jsonl",
-                "rm-plan.json", "rm-removed.json",
+                "rm-plan.json", "rm-removed.json", "watch.json",
             ]
         )
     }
@@ -45,6 +45,18 @@ import Testing
         }
         #expect(doctor.roots.map(\.provider) == [.ollama, .huggingface, .manual])
         #expect(doctor.roots[1].excluded.count == 1)
+    }
+
+    @Test func watchDecodesTheCanonicalFolderAndConfigPath() throws {
+        let message = try decodeLine(try fixture("watch.json"), as: WatchResult.self)
+
+        guard case .result(let result) = message else {
+            Issue.record("expected a result, got \(message)")
+            return
+        }
+        #expect(result.path == "/Users/me/models")
+        #expect(result.added)
+        #expect(result.config == "/Users/me/.modeld/config.toml")
     }
 
     @Test func daemonStatusKeepsEnvironmentNamesIntact() throws {

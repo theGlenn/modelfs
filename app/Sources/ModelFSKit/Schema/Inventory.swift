@@ -65,6 +65,7 @@ public enum Provider: String, OpenEnum, CaseIterable, Comparable {
     case ollama
     case huggingface
     case lmstudio
+    case xybrid
     /// Folders listed in `~/.modeld/config.toml`.
     case manual
     case unknown

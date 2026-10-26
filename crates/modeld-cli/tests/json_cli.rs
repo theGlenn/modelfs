@@ -91,6 +91,132 @@ fn last_line(lines: &[Value]) -> &Value {
 }
 
 #[test]
+fn watch_adds_a_folder_and_doctor_picks_it_up_without_restart() {
+    let home = Home::new();
+    let folder = home.dir.path().join("more models");
+    std::fs::create_dir_all(&folder).expect("new folder");
+    let path = folder.to_str().expect("path");
+    let (lines, status) = home.json(&["watch", path, "--json"]);
+    assert!(status.success());
+    let result = &last_line(&lines)["result"];
+    assert_eq!(
+        result["path"].as_str(),
+        folder.canonicalize().expect("canonical").to_str()
+    );
+    assert_eq!(result["added"], true);
+    assert_eq!(
+        result["config"].as_str(),
+        home.store().join("config.toml").to_str()
+    );
+    let generation = home.generation();
+    assert!(generation.is_some());
+    let (second, status) = home.json(&["watch", path, "--json"]);
+    assert!(status.success());
+    assert_eq!(last_line(&second)["result"]["added"], false);
+    assert_eq!(home.generation(), generation);
+    let (doctor, status) = home.json(&["doctor", "--json"]);
+    assert!(status.success());
+    assert!(
+        last_line(&doctor)["result"]["roots"]
+            .as_array()
+            .expect("roots")
+            .iter()
+            .any(|root| root["path"] == result["path"] && root["provider"] == "manual")
+    );
+}
+
+#[test]
+fn watch_reports_invalid_folder_and_config_as_json_errors() {
+    let home = Home::new();
+    let (missing, status) = home.json(&["watch", "/not-a-modeld-test-folder", "--json"]);
+    assert!(!status.success());
+    assert_eq!(last_line(&missing)["error"]["code"], "watch_failed");
+    std::fs::write(home.store().join("config.toml"), "[broken").expect("config");
+    let (broken, status) = home.json(&["watch", home.dir.path().to_str().expect("path"), "--json"]);
+    assert!(!status.success());
+    assert_eq!(last_line(&broken)["error"]["code"], "watch_failed");
+    assert_eq!(
+        std::fs::read_to_string(home.store().join("config.toml")).expect("config"),
+        "[broken"
+    );
+}
+
+#[test]
+fn xybrid_models_are_detected_and_recorded_as_their_own_provider() {
+    let home = Home::new();
+    let model = home
+        .dir
+        .path()
+        .join(".xybrid/cache/models/example/universal.xyb");
+    std::fs::create_dir_all(model.parent().expect("parent")).expect("folder");
+    std::fs::write(&model, WEIGHTS).expect("weights");
+    std::fs::File::open(&model)
+        .and_then(|file| {
+            file.set_times(
+                std::fs::FileTimes::new().set_modified(SystemTime::now() - Duration::from_hours(1)),
+            )
+        })
+        .expect("backdate model");
+    let (doctor, status) = home.json(&["doctor", "--json"]);
+    assert!(status.success());
+    assert!(
+        last_line(&doctor)["result"]["roots"]
+            .as_array()
+            .expect("roots")
+            .iter()
+            .any(|root| root["provider"] == "xybrid")
+    );
+    let (pass, status) = home.json(&["pass", "--dry-run", "--min-size", "1", "--json"]);
+    assert!(status.success(), "{pass:?}");
+    let (ls, status) = home.json(&["ls", "--json"]);
+    assert!(status.success());
+    let models = last_line(&ls)["result"]["models"]
+        .as_array()
+        .expect("models");
+    assert_eq!(models.len(), 1);
+    assert_eq!(models[0]["format"], "XYB");
+    assert_eq!(models[0]["references"][0]["provider"], "xybrid");
+}
+
+#[test]
+fn watching_xybrid_or_home_does_not_reimport_excluded_runtime_files_as_manual() {
+    let home = Home::new();
+    let model = home
+        .dir
+        .path()
+        .join(".xybrid/cache/models/example/model.gguf");
+    std::fs::create_dir_all(model.parent().expect("parent")).expect("models");
+    std::fs::write(&model, WEIGHTS).expect("model");
+    for relative in [
+        ".xybrid/cache/xcframework/test/model.gguf",
+        ".xybrid/traces/test.gguf",
+        // These providers have no detected models/hub root at all.
+        ".lmstudio/.internal/staging.gguf",
+        ".cache/huggingface/xet/chunk.gguf",
+    ] {
+        let path = home.dir.path().join(relative);
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("folder");
+        std::fs::write(path, WEIGHTS).expect("runtime file");
+    }
+    for folder in [
+        home.dir.path().join(".xybrid"),
+        home.dir.path().to_path_buf(),
+    ] {
+        let (_, status) = home.json(&["watch", folder.to_str().expect("path"), "--json"]);
+        assert!(status.success());
+        let output = home
+            .modeld(&["scan", "--min-size", "1"])
+            .output()
+            .expect("scan");
+        assert!(output.status.success());
+        let text = String::from_utf8(output.stdout).expect("UTF-8");
+        assert!(text.contains("Found 1 model artifacts"), "{text}");
+        assert!(!text.contains("xcframework"), "{text}");
+        assert!(!text.contains("test.gguf"), "{text}");
+    }
+}
+
+#[test]
 fn pass_clones_a_duplicate_and_ls_shows_both_copies_sharing() {
     let home = Home::new();
     home.settled_model("a.gguf");
