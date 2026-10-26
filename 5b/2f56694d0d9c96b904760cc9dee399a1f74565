@@ -1,0 +1,41 @@
+DECISIONS.md
+  s_dd1b49c72c3edc::t_bf58ca40a75460 81-85
+app/Sources/ModelFSKit/Schema/Inventory.swift
+  s_dd1b49c72c3edc::t_bfeaec569a4ca6 21
+crates/modeld-cli/src/report.rs
+  s_883ccbd23a1ebe::t_1969b4af2d88ec 178-181,183,186-204,208-254,364-365,461-591
+crates/modeld-cli/tests/json_cli.rs
+  s_c65cc0017c1522::t_97c26287df2b6a 308-413
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "5b2f56694d0d9c96b904760cc9dee399a1f74565",
+  "prompts": {},
+  "sessions": {
+    "s_883ccbd23a1ebe": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "01a176ca-823d-7613-8af1-4acbd8fa70c5",
+        "model": "unknown"
+      },
+      "human_author": "Glenn Sonna <3216616+theGlenn@users.noreply.github.com>"
+    },
+    "s_c65cc0017c1522": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a176ca-823d-7613-8af1-4acbd8fa70c5",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "Glenn Sonna <3216616+theGlenn@users.noreply.github.com>"
+    },
+    "s_dd1b49c72c3edc": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a176dd-79db-7911-8566-eb12c4d6b047",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "Glenn Sonna <3216616+theGlenn@users.noreply.github.com>"
+    }
+  }
+}
