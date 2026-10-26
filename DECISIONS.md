@@ -78,7 +78,11 @@ Model metadata is for display only. `modeld-formats` reads GGUF metadata
 headers only, so their cost does not depend on model size. Every length field
 is checked against a cap before allocating, so a corrupt file gives an error,
 never a panic or an unbounded read. The facts are recorded once per artifact
-and shown by `ls`; they never influence deduplication.
+and shown by `ls`; they never influence deduplication. Display names replace
+generic header names (`Hf`, `Lm`, `model`, `unknown`, `unnamed`, or blank) with
+descriptive filenames, provider-qualified labels, or a short digest. This happens
+when reading, so existing indexed models benefit without rewriting metadata.
+Quantization is never inferred from the filename.
 
 ## Finding model files
 

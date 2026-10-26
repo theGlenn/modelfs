@@ -306,6 +306,112 @@ fn generation_moves_on_pass_but_not_on_ls() {
 }
 
 #[test]
+fn indexed_generic_gguf_names_use_filenames_without_rewriting_header_facts() {
+    /// A minimal GGUF v3 header plus distinct payload bytes for each model.
+    fn gguf(name: &str, file_type: u32, marker: u8) -> Vec<u8> {
+        fn string(bytes: &mut Vec<u8>, text: &str) {
+            bytes.extend(
+                u64::try_from(text.len())
+                    .expect("string length")
+                    .to_le_bytes(),
+            );
+            bytes.extend(text.as_bytes());
+        }
+        let mut bytes = b"GGUF".to_vec();
+        bytes.extend(3u32.to_le_bytes());
+        bytes.extend(0u64.to_le_bytes()); // No tensor descriptors are needed for header facts.
+        bytes.extend(2u64.to_le_bytes());
+        string(&mut bytes, "general.name");
+        bytes.extend(8u32.to_le_bytes());
+        string(&mut bytes, name);
+        string(&mut bytes, "general.file_type");
+        bytes.extend(4u32.to_le_bytes());
+        bytes.extend(file_type.to_le_bytes());
+        bytes.extend([marker; 32]);
+        bytes
+    }
+
+    let home = Home::new();
+    let generic_names = [
+        "Ternary-Bonsai-2-27B-Q2_0-prism-fork-required",
+        "Other-7B-Q4_K_M",
+    ];
+    for (index, name) in generic_names.iter().enumerate() {
+        home.settled_model_of(
+            &format!("{name}.gguf"),
+            &gguf("Hf", 41, u8::try_from(index).expect("marker")),
+        );
+    }
+    // A useful header name still wins over a less informative filename.
+    home.settled_model_of("control.gguf", &gguf("Qwen3.5 0.8B Instruct", 15, 2));
+    let (pass, status) = home.json(&["pass", "--json", "--dry-run", "--min-size", "1"]);
+    assert!(status.success(), "{pass:?}");
+
+    // These are already indexed rows, exactly as an older engine leaves them.
+    // Reading ls must fix their display without requiring another sync.
+    let store = modeld_store::Store::open(home.store()).expect("open indexed store");
+    let indexed = store.artifacts().expect("indexed artifacts");
+    assert_eq!(indexed.len(), 3);
+    assert_eq!(
+        indexed
+            .iter()
+            .filter(|artifact| {
+                artifact.semantics.as_ref().is_some_and(|facts| {
+                    facts.name.as_deref() == Some("Hf") && facts.quant.is_none()
+                })
+            })
+            .count(),
+        2
+    );
+    for artifact in &indexed {
+        assert!(
+            !store
+                .semantics_pending(&artifact.digest)
+                .expect("already analyzed")
+        );
+    }
+    drop(store);
+    let generation = home.generation();
+
+    let (lines, status) = home.json(&["ls", "--json"]);
+    assert!(status.success());
+    let models = last_line(&lines)["result"]["models"]
+        .as_array()
+        .expect("models");
+    assert_eq!(models.len(), 3);
+    assert_ne!(models[0]["digest"], models[1]["digest"]);
+    for name in generic_names {
+        let row = models
+            .iter()
+            .find(|model| model["name"] == name)
+            .unwrap_or_else(|| {
+                panic!("indexed generic header should display filename {name}: {models:?}")
+            });
+        // Code 41 is unknown. Filename labels must not invent its quantization.
+        assert_eq!(row["quant"], Value::Null);
+    }
+    let control = models
+        .iter()
+        .find(|model| model["name"] == "Qwen3.5 0.8B Instruct")
+        .expect("informative header name is preserved");
+    assert_eq!(control["quant"], "Q4_K_M");
+
+    let store = modeld_store::Store::open(home.store()).expect("reopen store");
+    for artifact in indexed {
+        assert_eq!(
+            store
+                .artifact(&artifact.digest)
+                .expect("read artifact")
+                .expect("still indexed")
+                .semantics,
+            artifact.semantics,
+            "display fallback must not rewrite persisted header facts"
+        );
+    }
+    assert_eq!(home.generation(), generation, "ls is read-only");
+}
+
+#[test]
 fn doctor_lists_the_configured_folder() {
     let home = Home::new();
 
