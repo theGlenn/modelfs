@@ -1,0 +1,137 @@
+Cargo.lock
+  s_883ccbd23a1ebe::t_5fe4de84cc95bb 399,412
+DECISIONS.md
+  s_dd1b49c72c3edc::t_4b4ca3e3fd15d4 90-91,108-110,198,405,437-443
+README.md
+  s_883ccbd23a1ebe::t_0788626f7eb710 19,117-121,133,145,159,171,176-188
+app/Sources/ModelFS/Shared/Components.swift
+  s_c65cc0017c1522::t_19539bf74d6807 4-60,159-160
+app/Sources/ModelFS/Shared/Formatting.swift
+  s_c65cc0017c1522::t_e243789e81daee 18,34
+app/Sources/ModelFS/Window/BackgroundServiceView.swift
+  s_883ccbd23a1ebe::t_20cd38c9efd7dc 36-47,50-82,85,124-154,156-208
+app/Sources/ModelFS/Window/DuplicatesView.swift
+  s_883ccbd23a1ebe::t_91a46705fd8d1b 4,10-24,28-35,39-40,44-59,62,66,69-96,98-113,115-122,124-139,141-143,145
+app/Sources/ModelFS/Window/MainWindow.swift
+  s_b897597b81abb6::t_52a1a8a14ea4ed 69-88,95,121,149
+app/Sources/ModelFS/Window/ModelDetailView.swift
+  s_c65cc0017c1522::t_b2ac6ddfca90fd 133
+app/Sources/ModelFS/Window/ModelsView.swift
+  s_883ccbd23a1ebe::t_b30544dae6474e 35-41,45,48-49,58,60-79,81,91-101,105,108-119,132-141,158,162-165,169,172-211,220,229-294
+app/Sources/ModelFSKit/Engine/EngineClient.swift
+  s_f58f7635747491::t_84eb2d77ad15db 21-25
+app/Sources/ModelFSKit/Schema/EngineMessage.swift
+  s_f58f7635747491::t_201ead44e4cc70 69
+app/Sources/ModelFSKit/Schema/Inventory.swift
+  s_dd1b49c72c3edc::t_4a4abf70908f4a 68
+app/Sources/ModelFSKit/Schema/Watch.swift
+  s_f58f7635747491::t_df4f5fcae682dd 1-11
+app/Sources/ModelFSKit/State/Activity.swift
+  s_f58f7635747491::t_9dc9b0285ad9a9 9
+app/Sources/ModelFSKit/State/AppModel.swift
+  s_f58f7635747491::t_01ddccb8e22a53 22-23,169,196-218
+app/Sources/ModelFSKit/State/ModelGroup.swift
+  s_c65cc0017c1522::t_744c348f7f952a 1-39
+app/Tests/ModelFSKitTests/EngineProcessTests.swift
+  s_883ccbd23a1ebe::t_591e51c1d78e06 11,17,21,24-30,32-41,66,105-106,113-116
+app/Tests/ModelFSKitTests/ModelGroupTests.swift
+  s_c65cc0017c1522::t_5a3e5177085150 1-73
+app/Tests/ModelFSKitTests/SchemaFixtureTests.swift
+  s_c65cc0017c1522::t_13ad1117075a50 14,50-61
+app/Tests/ModelFSKitTests/WatchTests.swift
+  s_883ccbd23a1ebe::t_aafb7d3d8d8d52 1-111
+crates/modeld-cli/Cargo.toml
+  s_c65cc0017c1522::t_660615b1b69ce1 27-29
+crates/modeld-cli/src/inventory.rs
+  s_c65cc0017c1522::t_5fa3a99cb2b69f 316
+crates/modeld-cli/src/json.rs
+  s_883ccbd23a1ebe::t_0b8057dee7d941 173-174,242-251,323,888-898
+crates/modeld-cli/src/main.rs
+  s_c65cc0017c1522::t_c832fda9da924a 27,32,50-55,103,156,189
+crates/modeld-cli/src/remove/files.rs
+  s_883ccbd23a1ebe::t_3bd0cf2be83098 1,161-163
+crates/modeld-cli/src/remove/mod.rs
+  s_883ccbd23a1ebe::t_7e3e635b3cdddc 68,269
+crates/modeld-cli/src/remove/tests.rs
+  s_c65cc0017c1522::t_ae9b90ef6ca201 128-155
+crates/modeld-cli/src/watch.rs
+  s_c65cc0017c1522::t_af8743f989f154 1-199
+crates/modeld-cli/tests/json_cli.rs
+  s_c65cc0017c1522::t_5e4d75b1ee0c06 93-218
+crates/modeld-core/src/artifact.rs
+  s_c65cc0017c1522::t_f54a08a10b89e8 16-17
+crates/modeld-providers/src/huggingface.rs
+  s_883ccbd23a1ebe::t_5962e9935edd83 21,26-32
+crates/modeld-providers/src/lib.rs
+  s_883ccbd23a1ebe::t_80e73b483409e6 14,68,84-89,93-129,161-212
+crates/modeld-providers/src/lmstudio.rs
+  s_883ccbd23a1ebe::t_392fd1706b3bbb 17,22-27
+crates/modeld-providers/src/scan.rs
+  s_c65cc0017c1522::t_f670f73473111e 61-63,112,206
+crates/modeld-providers/src/xybrid.rs
+  s_883ccbd23a1ebe::t_12d8a89af6bacf 1-85
+crates/modeld-store/src/lib.rs
+  s_c65cc0017c1522::t_0031253bdc6ad3 903
+providers/xybrid.md
+  s_8aa5d3b82a9e2d::t_aaccab1aff839d 1-14
+schema/README.md
+  s_883ccbd23a1ebe::t_0a23da090274fe 5,52-62
+schema/v1/watch.json
+  s_883ccbd23a1ebe::t_7e496c734c180a 1-9
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "63558315944d75327169669f4e844b6d68fa6d9c",
+  "prompts": {},
+  "sessions": {
+    "s_883ccbd23a1ebe": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "01a176ca-823d-7613-8af1-4acbd8fa70c5",
+        "model": "unknown"
+      },
+      "human_author": "Glenn Sonna <3216616+theGlenn@users.noreply.github.com>"
+    },
+    "s_8aa5d3b82a9e2d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a176cf-1c7e-73c0-a509-fcb93f5924aa",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "Glenn Sonna <3216616+theGlenn@users.noreply.github.com>"
+    },
+    "s_b897597b81abb6": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a176ca-ef12-7192-a55d-7412e28d2891",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "Glenn Sonna <3216616+theGlenn@users.noreply.github.com>"
+    },
+    "s_c65cc0017c1522": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a176ca-823d-7613-8af1-4acbd8fa70c5",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "Glenn Sonna <3216616+theGlenn@users.noreply.github.com>"
+    },
+    "s_dd1b49c72c3edc": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a176dd-79db-7911-8566-eb12c4d6b047",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "Glenn Sonna <3216616+theGlenn@users.noreply.github.com>"
+    },
+    "s_f58f7635747491": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "01a176ca-ef12-7192-a55d-7412e28d2891",
+        "model": "unknown"
+      },
+      "human_author": "Glenn Sonna <3216616+theGlenn@users.noreply.github.com>"
+    }
+  }
+}
