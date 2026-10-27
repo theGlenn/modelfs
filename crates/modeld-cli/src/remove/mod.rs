@@ -65,7 +65,7 @@ pub use ollama::Api as OllamaApi;
 pub enum Scope {
     /// These referenced paths.
     Paths(Vec<PathBuf>),
-    /// Every copy one app holds: `ollama`, `huggingface`, `lmstudio`, or
+    /// Every copy one app holds: `ollama`, `huggingface`, `lmstudio`, `xybrid`, or
     /// `manual` (your folders).
     Provider(String),
     /// Every copy, and the stored copy.
@@ -266,6 +266,7 @@ impl Planner<'_> {
         huggingface::plan(by_provider.get("huggingface"), &mut draft);
         files::plan_lmstudio(by_provider.get("lmstudio"), &mut draft);
         files::plan_manual(by_provider.get("manual"), self.roots, &mut draft);
+        files::plan_manual(by_provider.get("xybrid"), self.roots, &mut draft);
         for model in draft.models.clone().iter().filter(|model| model.everywhere) {
             draft.steps.push(Step {
                 digest: model.digest.clone(),

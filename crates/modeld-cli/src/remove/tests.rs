@@ -125,6 +125,34 @@ fn actions(plan: &Plan) -> Vec<&Action> {
     plan.steps.iter().map(|step| &step.action).collect()
 }
 
+#[test]
+fn xybrid_removal_trashes_only_the_selected_model_and_keeps_cache_state() {
+    let home = Home::new();
+    let root = home.root(ProviderKind::Xybrid, ".xybrid");
+    let model = settled(
+        &root.root.join("cache/models/example/universal.xyb"),
+        WEIGHTS,
+    );
+    let sidecar = settled(
+        &root.root.join("cache/models/example/universal.xyb.sha256"),
+        b"checksum",
+    );
+    let state = settled(&root.root.join("settings.json"), b"state");
+    let roots = [root];
+    home.sync(&roots);
+    let api = stopped_ollama();
+    let plan = home.plan(&roots, &api, &Scope::Provider("xybrid".to_string()), true);
+    assert!(plan.refusals.is_empty(), "{:?}", plan.refusals);
+    assert_eq!(plan.steps[0].path, model);
+    assert_eq!(plan.steps[0].action, Action::Trash);
+    assert!(plan.collateral.is_empty());
+    let outcome = home.execute(&plan, &api);
+    assert!(outcome.failure.is_none());
+    assert!(!model.exists());
+    assert!(sidecar.exists());
+    assert!(state.exists());
+}
+
 fn codes(plan: &Plan) -> Vec<RefusalCode> {
     plan.refusals.iter().map(|refusal| refusal.code).collect()
 }

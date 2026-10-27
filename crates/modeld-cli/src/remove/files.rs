@@ -1,4 +1,4 @@
-//! Removing plain files: LM Studio models and your own folders' files.
+//! Removing plain files: LM Studio, Xybrid, and your own folders' files.
 //!
 //! Both go to the Trash (`/usr/bin/trash`), where they keep their name and
 //! can be dragged back. An LM Studio `publisher/repo` folder goes whole once
@@ -158,7 +158,9 @@ fn symlinks_to(targets: &[Target], roots: &[ProviderRoot]) -> HashMap<PathBuf, V
     let plain = roots.iter().filter(|root| {
         matches!(
             root.kind,
-            modeld_core::ProviderKind::Manual | modeld_core::ProviderKind::LmStudio
+            modeld_core::ProviderKind::Manual
+                | modeld_core::ProviderKind::LmStudio
+                | modeld_core::ProviderKind::Xybrid
         )
     });
     for root in plain {

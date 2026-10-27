@@ -900,6 +900,7 @@ fn provider_name(provider: ProviderKind) -> &'static str {
         ProviderKind::Ollama => "ollama",
         ProviderKind::HuggingFace => "huggingface",
         ProviderKind::LmStudio => "lmstudio",
+        ProviderKind::Xybrid => "xybrid",
         _ => "manual",
     }
 }

@@ -18,9 +18,16 @@ pub fn detect(home: &Path) -> Option<ProviderRoot> {
         // Root is the hub cache itself; the xet tree lives outside it under HF_HOME
         // but is listed excluded defensively in case of layout drift.
         root: hub,
-        excluded: vec![hf_home.join("xet")],
+        excluded: excluded(home),
         label_prefix: None,
     })
+}
+
+/// The transfer cache remains protected even when no hub root exists.
+pub(crate) fn excluded(home: &Path) -> Vec<PathBuf> {
+    let hf_home =
+        std::env::var_os("HF_HOME").map_or_else(|| home.join(".cache/huggingface"), PathBuf::from);
+    vec![hf_home.join("xet")]
 }
 
 /// Harvest the claimed digest from an HF blob filename. 64-hex names are LFS sha256

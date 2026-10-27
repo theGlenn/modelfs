@@ -14,9 +14,15 @@ pub fn detect(home: &Path) -> Option<ProviderRoot> {
     models.is_dir().then(|| ProviderRoot {
         kind: ProviderKind::LmStudio,
         root: models,
-        excluded: vec![base.join(".internal"), base.join("hub")],
+        excluded: excluded(home),
         label_prefix: None,
     })
+}
+
+/// Protected app state exists independently of the models folder.
+pub(crate) fn excluded(home: &Path) -> Vec<PathBuf> {
+    let base = home.join(".lmstudio");
+    vec![base.join(".internal"), base.join("hub")]
 }
 
 /// The `<publisher>/<repo>` folder under `root` that holds `file`.

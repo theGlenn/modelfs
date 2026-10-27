@@ -313,6 +313,7 @@ pub(crate) fn provider_name(kind: ProviderKind) -> &'static str {
         ProviderKind::Ollama => "ollama",
         ProviderKind::HuggingFace => "huggingface",
         ProviderKind::LmStudio => "lmstudio",
+        ProviderKind::Xybrid => "xybrid",
         _ => "manual",
     }
 }

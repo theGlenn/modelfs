@@ -66,12 +66,33 @@ struct MainWindow: View {
                     .background(.bar)
                     Divider()
                 }
+                if let watched = model.lastWatchedFolder, !model.activity.isBusy, model.problem == nil {
+                    HStack(spacing: 10) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("\(fileName(watched.path)) is \(watched.added ? "now watched" : "already watched").")
+                            Text(model.daemon?.isInstalled == true
+                                 ? "Scan now to find its models, or let the background service pick them up."
+                                 : "Scan now to find its models.")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 8)
+                        Button("Scan now") { model.runPass(dryRun: true) }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .background(.bar)
+                    Divider()
+                }
                 detail
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .toolbar {
             ToolbarItemGroup {
+                AddFolderButton()
                 Button {
                     model.refresh()
                 } label: {
@@ -97,7 +118,7 @@ struct MainWindow: View {
 
     @ViewBuilder
     private var detail: some View {
-        if model.needsFirstScan {
+        if model.needsFirstScan && section != .service {
             FirstRunView()
         } else if model.inventory == nil {
             ProgressView("Reading the store…")
@@ -125,7 +146,7 @@ struct FirstRunView: View {
         } description: {
             Text(
                 """
-                ModelFS looks through Ollama, Hugging Face, LM Studio, and the folders in \
+                ModelFS looks through Ollama, Hugging Face, LM Studio, Xybrid, and the folders in \
                 ~/.modeld/config.toml. Scanning adds each model to the ModelFS store as a clone, \
                 which takes no extra disk space and changes no app's files.
                 """

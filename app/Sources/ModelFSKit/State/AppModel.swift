@@ -19,6 +19,8 @@ public final class AppModel {
     public private(set) var lastPass: PassReport?
     /// The last pass was cancelled while it waited for the store lock.
     public private(set) var lastPassCancelled = false
+    /// The last folder this app added, or found already watched.
+    public private(set) var lastWatchedFolder: WatchResult?
     /// Why the last change (pass, service) failed; kept until the next one.
     private var actionProblem: String?
     /// Why the last refresh could not read everything.
@@ -164,6 +166,7 @@ public final class AppModel {
         activity = .pass(PassProgress(dryRun: dryRun))
         actionProblem = nil
         lastPassCancelled = false
+        lastWatchedFolder = nil
         let (events, forward) = AsyncStream.makeStream(of: PassEvent.self)
         mutation = Task {
             let progress = Task { @MainActor in
@@ -188,6 +191,29 @@ public final class AppModel {
     public func cancelPass() {
         guard case .pass(let progress) = activity, progress.canCancel else { return }
         mutation?.cancel()
+    }
+
+    /// Watches a folder on future scans without importing or deduplicating its files.
+    public func watchFolder(_ folder: URL) {
+        guard mutation == nil, let client else { return }
+        guard refuseUnlessFoldersKnown() else { return }
+        activity = .addingFolder
+        actionProblem = nil
+        lastWatchedFolder = nil
+        mutation = Task {
+            let result = await Self.attempt { () async throws(EngineError) in
+                try await client.watchFolder(folder)
+            }
+            switch result {
+            case .success(let watched):
+                lastWatchedFolder = watched
+            case .failure(let error):
+                actionProblem = error.localizedDescription
+            }
+            await reload()
+            activity = .idle
+            mutation = nil
+        }
     }
 
     /// Installs or updates the background service with this app's engine.

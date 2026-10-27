@@ -18,7 +18,7 @@ public struct Inventory: Decodable, Sendable, Equatable {
 public struct Model: Decodable, Sendable, Equatable, Identifiable {
     /// `sha256:<hex>`, the model's identity.
     public var digest: String
-    /// The most human name known: header name, label, or short digest.
+    /// Display name: descriptive header, or filename/label/digest fallback.
     public var name: String
     /// `nil` until the engine has read the file's header.
     public var kind: Kind?
@@ -65,6 +65,7 @@ public enum Provider: String, OpenEnum, CaseIterable, Comparable {
     case ollama
     case huggingface
     case lmstudio
+    case xybrid
     /// Folders listed in `~/.modeld/config.toml`.
     case manual
     case unknown

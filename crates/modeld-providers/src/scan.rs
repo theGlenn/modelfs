@@ -58,7 +58,9 @@ pub fn scan(roots: &[ProviderRoot], min_size: u64) -> ScanOutcome {
             ProviderKind::Ollama => ollama::collect(root, min_size, &mut outcome),
             ProviderKind::HuggingFace => huggingface::collect(root, min_size, &mut outcome),
             ProviderKind::LmStudio => lmstudio::collect(root, min_size, &mut outcome),
-            ProviderKind::Manual => collect_model_tree(root, min_size, &mut outcome),
+            ProviderKind::Manual | ProviderKind::Xybrid => {
+                collect_model_tree(root, min_size, &mut outcome);
+            }
             _ => {}
         }
     }
@@ -107,7 +109,7 @@ pub fn hash_for_dedup(outcome: &mut ScanOutcome, mut progress: impl FnMut(&Path,
 
 /// Collects recognized model files from a plain directory tree.
 ///
-/// Shared by LM Studio and Manual (configured) roots: format-filtered walk, no
+/// Shared by LM Studio, Xybrid, and Manual roots: format-filtered walk, no
 /// digests (computed on demand later), labels made from the root-relative path
 /// prefixed with the root's `label_prefix` when set. Symlinks are skipped — a
 /// symlinked model file already shares storage with its target.
@@ -201,6 +203,7 @@ pub(crate) fn detect_format(path: &Path) -> Option<Format> {
         "gguf" => Some(Format::Gguf),
         "safetensors" => Some(Format::Safetensors),
         "onnx" => Some(Format::Onnx),
+        "xyb" => Some(Format::Other("XYB".to_string())),
         "bin" | "pt" => Some(Format::Other("pytorch".to_string())),
         _ => None,
     });

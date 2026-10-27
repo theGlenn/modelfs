@@ -24,11 +24,12 @@ mod rm;
 mod schedule;
 mod semantics;
 mod sync;
+mod watch;
 
 #[derive(Parser)]
 #[command(name = "modeld", version, about = "Local model storage layer")]
 struct Cli {
-    /// Write JSON Lines instead of text (doctor, ls, pass, rm, daemon install/uninstall/status)
+    /// Write JSON Lines instead of text (doctor, ls, watch, pass, rm, daemon install/uninstall/status)
     #[arg(long, global = true)]
     json: bool,
     #[command(subcommand)]
@@ -46,6 +47,12 @@ enum Output {
 enum Command {
     /// Report detected providers and their scan roots
     Doctor,
+    /// Add a folder to scan and watch for models
+    Watch {
+        /// Existing folder to add (the background service picks it up automatically)
+        #[arg(value_name = "FOLDER")]
+        folder: PathBuf,
+    },
     /// Inventory local model artifacts and report exact duplicates
     Scan {
         /// Ignore files smaller than this many bytes
@@ -93,7 +100,7 @@ enum Command {
         #[arg(long, value_name = "PATH")]
         path: Vec<PathBuf>,
         /// Remove every copy one app holds
-        #[arg(long, value_parser = ["ollama", "huggingface", "lmstudio", "manual"])]
+        #[arg(long, value_parser = ["ollama", "huggingface", "lmstudio", "xybrid", "manual"])]
         provider: Option<String>,
         /// Remove every copy, and the stored copy
         #[arg(long)]
@@ -146,6 +153,7 @@ impl Command {
         matches!(
             self,
             Self::Doctor
+                | Self::Watch { .. }
                 | Self::Ls
                 | Self::Pass { .. }
                 | Self::Rm { .. }
@@ -178,6 +186,7 @@ fn main() {
     }
     match command {
         Command::Doctor => doctor(output),
+        Command::Watch { folder } => watch::run(&folder, output),
         Command::Scan { min_size } => scan(min_size),
         Command::Sync { min_size } => {
             sync(min_size);
