@@ -1,0 +1,40 @@
+.github/workflows/release.yml
+  s_87b7f1a3c77d56::t_ca31558933f872 101-103
+  s_87b7f1a3c77d56::t_9626392629b205 5-7,20-21,23-24,26,50-80,90-100,104-142,158,171,190,201
+README.md
+  s_87b7f1a3c77d56::t_329bc5dd9ddf21 39-40,43,240,298-300
+scripts/tests/test_release.py
+  s_87b7f1a3c77d56::t_471545c109cccc 124-127,159,176-177,183-187,208-217,243-244
+scripts/tests/test_update_homebrew.py
+  s_87b7f1a3c77d56::t_b7bf423600ed9a 78-79,130-131,147,150-155
+  s_87b7f1a3c77d56::t_3503551e2b4cef 156
+scripts/build-app.sh
+  s_87b7f1a3c77d56::t_227edc8569f49a 5,13-16,30,39,48-50,60,62-76,78-97,99-104,129-130
+  s_87b7f1a3c77d56::t_d0a9436585663a 56-58
+  s_87b7f1a3c77d56::t_51354e16514aec 40
+docs/releasing.md
+  s_87b7f1a3c77d56::t_cdcb4d77901c52 35-36,40-46,62-67,117-118
+  s_87b7f1a3c77d56::t_7b5df263620af2 123-125
+DECISIONS.md
+  s_87b7f1a3c77d56::t_7b5df263620af2 505-512,524-526
+scripts/sign-and-notarize.sh
+  s_87b7f1a3c77d56::t_c905fc4a8b4d4b 2-7,16-19,21-22,83,89
+scripts/update-homebrew.py
+  s_87b7f1a3c77d56::t_b7bf423600ed9a 20-21,59-64
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "af39029fb17b4f9f2a5d048de133155cf2699aa8",
+  "prompts": {},
+  "sessions": {
+    "s_87b7f1a3c77d56": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1c06a2bd-c9ae-4f52-a7be-d9e7a9e22d0b",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Glenn Sonna <3216616+theGlenn@users.noreply.github.com>"
+    }
+  }
+}
