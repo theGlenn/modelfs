@@ -1,0 +1,8 @@
+{
+  "type": "error",
+  "schema": 1,
+  "error": {
+    "code": "store_unavailable",
+    "message": "cannot open store: store I/O error: Permission denied (os error 13)"
+  }
+}

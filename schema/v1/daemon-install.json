@@ -1,0 +1,32 @@
+{
+  "type": "result",
+  "schema": 1,
+  "result": {
+    "binary": "/Users/me/.modeld/bin/modeld",
+    "plist": "/Users/me/Library/LaunchAgents/dev.modeld.daemon.plist",
+    "log": "/Users/me/.modeld/daemon.log",
+    "status": {
+      "state": "running",
+      "pid": 4242,
+      "binary": "/Users/me/.modeld/bin/modeld",
+      "binary_is_current": true,
+      "plist": "/Users/me/Library/LaunchAgents/dev.modeld.daemon.plist",
+      "log": "/Users/me/.modeld/daemon.log",
+      "dry_run": false,
+      "environment": {
+        "HF_HOME": "/Volumes/Models/hf",
+        "HOME": "/Users/me"
+      },
+      "last_pass": {
+        "at": "2026-09-23T21:45:21Z",
+        "summary": "pass: 1 clone(s) made (532.5 MB freed)",
+        "failed": false
+      },
+      "recent_log": [
+        "2026-09-23T21:45:03Z hashing /Users/me/Downloads/models/qwen-copy.gguf (532.5 MB)",
+        "2026-09-23T21:45:21Z cloned /Users/me/Downloads/models/qwen-copy.gguf",
+        "2026-09-23T21:45:21Z pass: 1 clone(s) made (532.5 MB freed)"
+      ]
+    }
+  }
+}

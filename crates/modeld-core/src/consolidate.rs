@@ -176,8 +176,21 @@ fn create_journal_temp(path: &Path) -> std::io::Result<(PathBuf, std::fs::File)>
 /// prevent consolidating the rest.
 #[must_use]
 pub fn consolidate(replacements: &[Replacement], journal: &Journal) -> Report {
+    consolidate_with(replacements, journal, |_| {})
+}
+
+/// Like [`consolidate`], calling `before_each` before each replacement starts.
+///
+/// `before_each` runs between replacements, never inside one, so a caller
+/// may report progress from it without ever interrupting a swap.
+pub fn consolidate_with(
+    replacements: &[Replacement],
+    journal: &Journal,
+    mut before_each: impl FnMut(&Replacement),
+) -> Report {
     let mut report = Report::default();
     for replacement in replacements {
+        before_each(replacement);
         match replace_with_clone(replacement, journal) {
             Ok(_entry) => {
                 report.completed.push(replacement.victim.clone());
@@ -575,6 +588,24 @@ mod tests {
             .expect("mtime");
         assert_eq!(restored_mtime, victim_mtime);
         assert_eq!(journal.entries().expect("entries").len(), 1);
+    }
+
+    #[test]
+    fn before_each_hears_every_replacement_in_order() {
+        let (dir, replacement, journal) = fixture();
+        let missing = Replacement {
+            victim: dir.path().join("gone.gguf"),
+            ..replacement.clone()
+        };
+        let mut heard = Vec::new();
+
+        let report = consolidate_with(&[replacement.clone(), missing.clone()], &journal, |r| {
+            heard.push(r.victim.clone());
+        });
+
+        assert_eq!(heard, vec![replacement.victim, missing.victim]);
+        assert_eq!(report.completed.len(), 1);
+        assert_eq!(report.refused.len(), 1);
     }
 
     #[test]

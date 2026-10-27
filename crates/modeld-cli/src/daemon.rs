@@ -13,7 +13,7 @@
 //! signal exits immediately.
 
 use crate::events::EventFilter;
-use crate::reconcile::{self, PassOptions, PassReport};
+use crate::reconcile::{self, PassEvent, PassOptions, PassReport};
 use crate::report::human_bytes;
 use crate::schedule::{Schedule, Timings};
 use modeld_providers::{Detection, ProviderRoot};
@@ -89,7 +89,10 @@ pub fn run(store_root: &Path, options: PassOptions) -> Result<(), Box<dyn std::e
 }
 
 /// First SIGINT/SIGTERM raises the flag; a second one exits at once.
-fn stop_flag() -> std::io::Result<Arc<AtomicBool>> {
+///
+/// # Errors
+/// A signal handler could not be registered.
+pub(crate) fn stop_flag() -> std::io::Result<Arc<AtomicBool>> {
     let stop = Arc::new(AtomicBool::new(false));
     for signal in [signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM] {
         // Order matters: the conditional exit must see the flag before the
@@ -107,18 +110,21 @@ fn run_pass(
     options: PassOptions,
     stop: &AtomicBool,
 ) -> Option<Duration> {
-    let hashing = |path: &Path, size: u64| {
-        log(format!(
-            "hashing {} ({})",
-            path.display(),
-            human_bytes(size)
-        ));
+    let log_hashing = |event: PassEvent<'_>| {
+        if let PassEvent::Hashing { path, size } = event {
+            log(format!(
+                "hashing {} ({})",
+                path.display(),
+                human_bytes(size)
+            ));
+        }
     };
-    match reconcile::run(store_root, detection, options, stop, hashing) {
+    match reconcile::run(store_root, detection, options, stop, log_hashing) {
         Ok(None) => None, // stopped while waiting for the store lock
         Ok(Some(report)) => {
-            log_details(&report);
-            log(summarize(&report));
+            for line in describe(&report) {
+                log(line);
+            }
             report.sync.next_settle().map(|wait| wait + SETTLE_MARGIN)
         }
         Err(error) => {
@@ -128,48 +134,58 @@ fn run_pass(
     }
 }
 
-fn log_details(report: &PassReport) {
+/// Every line the daemon logs for a finished pass, the summary last.
+pub(crate) fn describe(report: &PassReport) -> Vec<String> {
+    let mut lines = details(report);
+    lines.push(summarize(report));
+    lines
+}
+
+/// What happened to each file: settling, skipped, warned about, cloned.
+fn details(report: &PassReport) -> Vec<String> {
+    let mut lines = Vec::new();
     for deferred in &report.sync.deferred {
-        log(format!(
+        lines.push(format!(
             "settling {} (ready in {})",
             deferred.path.display(),
             human_duration(deferred.settles_in)
         ));
     }
     for skipped in &report.sync.skipped {
-        log(format!(
+        lines.push(format!(
             "skip {} ({})",
             skipped.path.display(),
             skipped.reason
         ));
     }
     for warning in report.sync.warnings.iter().chain(&report.warnings) {
-        log(format!("warning: {warning}"));
+        lines.push(format!("warning: {warning}"));
     }
     let Some(consolidation) = &report.consolidation else {
         for planned in &report.planned {
-            log(format!(
+            lines.push(format!(
                 "would clone {} ({})",
                 planned.victim.display(),
                 human_bytes(planned.size)
             ));
         }
-        return;
+        return lines;
     };
     for path in &consolidation.completed {
-        log(format!("cloned {}", path.display()));
+        lines.push(format!("cloned {}", path.display()));
     }
     for refusal in &consolidation.refused {
-        log(format!(
+        lines.push(format!(
             "refused {} ({})",
             refusal.victim.display(),
             refusal.reason
         ));
     }
+    lines
 }
 
 /// One-line outcome of a pass.
-fn summarize(report: &PassReport) -> String {
+pub(crate) fn summarize(report: &PassReport) -> String {
     let mut parts = Vec::new();
     if report.sync.imported > 0 {
         parts.push(format!("{} new blob(s)", report.sync.imported));
@@ -398,6 +414,18 @@ mod tests {
         assert_eq!(
             summarize(&report(1, None)),
             "pass: 1 new blob(s), 1 clone(s) planned (2.6 GB), 1 settling"
+        );
+    }
+
+    #[test]
+    fn description_lists_each_file_then_the_summary() {
+        assert_eq!(
+            describe(&report(1, None)),
+            [
+                "settling /m/new.gguf (ready in 1m 30s)",
+                "would clone /m/copy.gguf (2.6 GB)",
+                "pass: 1 new blob(s), 1 clone(s) planned (2.6 GB), 1 settling",
+            ]
         );
     }
 

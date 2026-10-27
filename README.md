@@ -16,6 +16,7 @@ With `modeld`, you can:
 - Browse models across apps and locate their files with `sync`, `ls`, and `where`.
 - Preview disk savings with `dedupe --dry-run`, then consolidate with `dedupe`.
 - Keep new downloads deduplicated automatically with `daemon install`.
+- Add your own model folders with `watch <folder>` or the Mac app's folder picker.
 - Undo replacements with `restore`.
 
 ModelFS is in early development. See [How it stays safe](#how-it-stays-safe).
@@ -94,6 +95,30 @@ Logical usage:   5.1 GB
 Deduplicated:    532.5 MB
 ```
 
+## Mac app
+
+ModelFS also comes as a menu bar app. It shows every model across your apps,
+which ones share disk space, and what deduplicating would free, and it turns
+the background service on, off, or updates it.
+
+The app is not packaged for download yet. To build it from source, you need
+Rust and Xcode 26 or later; the app needs macOS 15 or later:
+
+```sh
+scripts/build-app.sh --release
+open dist/ModelFS.app
+```
+
+The app runs its own copy of `modeld` (inside `ModelFS.app/Contents/MacOS`)
+and changes nothing that the CLI would not. Its first scan only adds models
+to the store; **Deduplicate now** runs one `modeld pass`; **Remove…** shows
+what `modeld rm` would do for each app, and runs exactly that plan.
+
+The Models view opens in **Grouped** mode: expand a model to see its variants,
+or choose **Flat** for the original table. Duplicates appear as cards with each
+copy's location. **Background service** separates detected **Apps** from
+expandable watched **Folders**; **Add folder…** is also in the main toolbar.
+
 ## CLI reference
 
 Use `modeld <command> --help` for options.
@@ -105,14 +130,36 @@ Use `modeld <command> --help` for options.
 | `sync` | Imports models into `~/.modeld` and indexes their metadata | store only |
 | `ls` | Lists stored models, their format, quantization, size, and which apps use them | no |
 | `where <query>` | Finds paths for matching models | no |
+| `watch <folder>` | Adds a folder and its subfolders to the scan configuration | config only |
 | `dedupe [--dry-run]` | Replaces duplicates with APFS clones | yes, undoable |
 | `restore` | Rebuilds independent copies | yes |
 | `gc [--dry-run]` | Deletes unused stored copies | store only |
+| `rm <digest> --path P` / `--provider APP` / `--everywhere` | Removes a model from one app, or from every app and the store | yes: deletes, or moves to the Trash |
+| `pass [--dry-run]` | Runs one daemon pass now: imports settled downloads, then replaces duplicates | yes, undoable; store only with `--dry-run` |
 | `daemon [--dry-run]` | Runs automatic deduplication in the foreground | yes, undoable; store only with `--dry-run` |
 | `daemon install` / `uninstall` / `status` | Manages the background daemon | — |
 
-`scan`, `sync`, `dedupe`, and `daemon` scan files of at least 1 MiB by default.
-Use `--min-size <bytes>` to change this.
+`scan`, `sync`, `dedupe`, `pass`, and `daemon` scan files of at least 1 MiB by
+default. Use `--min-size <bytes>` to change this.
+
+`doctor`, `ls`, `watch`, `pass`, `rm`, and the `daemon` subcommands accept `--json`
+for machine-readable output (JSON Lines). See [`schema/`](schema/README.md).
+
+## Removing a model
+
+`modeld where <query>` shows a model's digest and every copy. Then:
+
+```sh
+modeld rm sha256:<digest> --provider lmstudio --dry-run   # what would go
+modeld rm sha256:<digest> --provider lmstudio             # asks first
+modeld rm sha256:<digest> --everywhere                    # every app and the store
+```
+
+Ollama models are removed through Ollama, which must be running; Hugging Face
+cache files are deleted; LM Studio, Xybrid, and your own files go to the Trash.
+Removing the last copy any app has also removes the stored copy. The plan
+says about how much space this frees: removing one app's copy of a model
+other apps share frees about nothing.
 
 ## What gets scanned
 
@@ -121,11 +168,24 @@ Use `--min-size <bytes>` to change this.
 | Ollama | `~/.ollama/models` (or `$OLLAMA_MODELS`) |
 | Hugging Face | `~/.cache/huggingface/hub` (or `$HF_HOME`, `$HF_HUB_CACHE`) |
 | LM Studio | `~/.lmstudio/models` |
+| Xybrid | `~/.xybrid` (model files only; runtime caches and traces excluded) |
 | Your folders | Paths listed in `~/.modeld/config.toml` |
 
 The Hugging Face scan includes cached MLX models and excludes the Xet chunk cache.
 
-Add folders or glob patterns to `~/.modeld/config.toml`:
+Add a folder from Terminal, or choose **Background service → Folders → Add folder…**
+in the Mac app:
+
+```sh
+modeld watch ~/models
+```
+
+The command preserves your existing configuration and avoids adding the same
+folder twice. The background service picks it up automatically; if it is off,
+turn it on or run `modeld pass` to import models now. Xybrid scans include
+GGUF, safetensors, ONNX, and `.xyb` model bundles.
+
+You can also add folders or glob patterns to `~/.modeld/config.toml`:
 
 ```toml
 [scan]

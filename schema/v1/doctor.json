@@ -1,0 +1,27 @@
+{
+  "type": "result",
+  "schema": 1,
+  "result": {
+    "store": "/Users/me/.modeld",
+    "roots": [
+      {
+        "provider": "ollama",
+        "path": "/Users/me/.ollama/models",
+        "excluded": []
+      },
+      {
+        "provider": "huggingface",
+        "path": "/Users/me/.cache/huggingface/hub",
+        "excluded": [
+          "/Users/me/.cache/huggingface/xet"
+        ]
+      },
+      {
+        "provider": "manual",
+        "path": "/Users/me/code/demo/fixtures/models",
+        "excluded": []
+      }
+    ],
+    "unreadable": []
+  }
+}

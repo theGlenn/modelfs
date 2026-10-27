@@ -175,14 +175,81 @@ pub fn render_ls(
     out
 }
 
-/// The most human name we have: header name, then any label, then the digest.
-fn display_name(artifact: &modeld_store::StoredArtifact) -> String {
-    artifact
+/// Prefers descriptive header names, replacing export placeholders with filenames.
+///
+/// Resolve names when reading so previously indexed models benefit without a
+/// re-scan or any change to their recorded header facts.
+pub fn display_name(artifact: &modeld_store::StoredArtifact) -> String {
+    let header_name = artifact
         .semantics
         .as_ref()
-        .and_then(|s| s.name.clone())
-        .or_else(|| artifact.references.iter().find_map(|r| r.label.clone()))
+        .and_then(|semantics| semantics.name.as_deref());
+    if let Some(name) = header_name {
+        if !generic_name(name) {
+            return name.to_string();
+        }
+        return artifact
+            .references
+            .iter()
+            .filter_map(reference_name)
+            .min()
+            .map_or_else(
+                || short_digest(&artifact.digest.to_string()),
+                |(_, name)| name,
+            );
+    }
+    artifact
+        .references
+        .iter()
+        .find_map(|reference| reference.label.clone())
         .unwrap_or_else(|| short_digest(&artifact.digest.to_string()))
+}
+
+/// An explicit placeholder list avoids rejecting real short names such as T5.
+fn generic_name(name: &str) -> bool {
+    matches!(
+        name.trim().to_ascii_lowercase().as_str(),
+        "" | "hf" | "lm" | "model" | "unknown" | "unnamed"
+    )
+}
+
+/// Filename, qualified label, then full path; ties sort by name, never input order.
+fn reference_name(reference: &modeld_store::Reference) -> Option<(u8, String)> {
+    let label = reference.label.as_deref().map(str::trim).filter(|label| {
+        !generic_name(label)
+            && std::path::Path::new(label)
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .is_some_and(|stem| {
+                    !content_addressed(stem)
+                        && (!generic_name(stem) || label.contains('/') || label.contains(": "))
+                })
+    });
+    // Provider labels retain repository/tag identity even for generated shard
+    // filenames shared by many models. Blob hashes are never display names.
+    let prefer_label = matches!(
+        reference.provider.as_str(),
+        "huggingface" | "lmstudio" | "ollama"
+    );
+    let stem = reference.path.file_stem()?.to_str()?;
+    if (!prefer_label || label.is_none()) && !generic_name(stem) && !content_addressed(stem) {
+        return Some((0, stem.to_string()));
+    }
+    if let Some(label) = label {
+        return Some((1, label.to_string()));
+    }
+    if !content_addressed(stem) && reference.path.parent()?.file_name().is_some() {
+        return Some((2, reference.path.display().to_string()));
+    }
+    None
+}
+
+fn content_addressed(name: &str) -> bool {
+    let hex = name
+        .strip_prefix("sha256-")
+        .or_else(|| name.strip_prefix("sha256:"))
+        .unwrap_or(name);
+    matches!(hex.len(), 40 | 64) && hex.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn render_ls_row(out: &mut String, artifact: &modeld_store::StoredArtifact) {
@@ -294,8 +361,8 @@ pub fn render_where(
 fn describe_semantics(artifact: &modeld_store::StoredArtifact) -> Option<String> {
     let semantics = artifact.semantics.as_ref()?;
     let mut parts: Vec<String> = Vec::new();
-    if let Some(name) = &semantics.name {
-        parts.push(name.clone());
+    if semantics.name.is_some() {
+        parts.push(display_name(artifact));
     }
     if semantics.kind == "asset" {
         parts.push("asset".to_string());
@@ -389,6 +456,137 @@ mod tests {
         assert!(rendered.contains("Assets (tokenizers, vocabularies):"));
         assert!(rendered.contains("Q1_0"));
         assert!(models_at < assets_at, "models list before assets");
+    }
+
+    #[test]
+    fn generic_header_names_use_a_descriptive_filename_without_changing_metadata() {
+        for name in ["Hf", " LM ", "model", "UNKNOWN", "unnamed", " \t"] {
+            let mut model = stored(
+                1,
+                ".zzz/models/Ternary-Bonsai-2-27B-Q2_0-prism-fork-required.gguf",
+                Some(modeld_store::Semantics {
+                    kind: "model".to_string(),
+                    name: Some(name.to_string()),
+                    architecture: Some("qwen35".to_string()),
+                    quant: None,
+                    params: Some("27B".to_string()),
+                }),
+            );
+            model.references[0].path =
+                "/models/Ternary-Bonsai-2-27B-Q2_0-prism-fork-required.gguf".into();
+            let original = model.semantics.clone();
+
+            assert_eq!(
+                display_name(&model),
+                "Ternary-Bonsai-2-27B-Q2_0-prism-fork-required"
+            );
+            assert!(
+                describe_semantics(&model)
+                    .expect("description")
+                    .starts_with("Ternary-Bonsai-2-27B")
+            );
+            assert_eq!(model.semantics, original);
+        }
+    }
+
+    #[test]
+    fn short_informative_header_names_keep_their_priority() {
+        for name in ["T5", "Yi", "OPT", "Phi", "Llama"] {
+            let mut model = stored(1, "Bonsai-27B.gguf", None);
+            model.semantics = Some(modeld_store::Semantics {
+                kind: "model".to_string(),
+                name: Some(name.to_string()),
+                architecture: None,
+                quant: None,
+                params: None,
+            });
+            assert_eq!(display_name(&model), name);
+        }
+    }
+
+    #[test]
+    fn generic_filenames_keep_provider_labels_and_folder_context() {
+        let mut model = stored(1, "acme/Bonsai-27B: model.gguf", None);
+        model.semantics = Some(modeld_store::Semantics {
+            kind: "model".to_string(),
+            name: Some("Hf".to_string()),
+            architecture: None,
+            quant: None,
+            params: None,
+        });
+        model.references[0].provider = "huggingface".to_string();
+        model.references[0].path = format!("/hub/blobs/{}", "a".repeat(64)).into();
+        assert_eq!(display_name(&model), "acme/Bonsai-27B: model.gguf");
+
+        model.references[0].provider = "manual".to_string();
+        model.references[0].path = "/models/Bonsai-27B/model.gguf".into();
+        model.references[0].label = Some("Bonsai-27B/model.gguf".to_string());
+        assert_eq!(display_name(&model), "Bonsai-27B/model.gguf");
+
+        model.references[0].provider = "ollama".to_string();
+        model.references[0].path = format!("/ollama/blobs/sha256-{}", "a".repeat(64)).into();
+        model.references[0].label = Some("ollama/qwen3:27b".to_string());
+        assert_eq!(display_name(&model), "ollama/qwen3:27b");
+
+        model.references[0].label = None;
+        assert_eq!(
+            display_name(&model),
+            short_digest(&model.digest.to_string())
+        );
+    }
+
+    #[test]
+    fn generic_name_fallback_is_independent_of_reference_order() {
+        let mut model = stored(1, "models/model.gguf", None);
+        model.semantics = Some(modeld_store::Semantics {
+            kind: "model".to_string(),
+            name: Some("Hf".to_string()),
+            architecture: None,
+            quant: None,
+            params: None,
+        });
+        model.references[0].path = "/models/model.gguf".into();
+        model.references.push(modeld_store::Reference {
+            path: "/other/Bonsai-27B.gguf".into(),
+            provider: "manual".to_string(),
+            label: None,
+        });
+        assert_eq!(display_name(&model), "Bonsai-27B");
+        model.references.reverse();
+        assert_eq!(display_name(&model), "Bonsai-27B");
+    }
+
+    #[test]
+    fn generic_exports_with_identical_shard_names_keep_their_repository_identity() {
+        let mut names = Vec::new();
+        for (provider, label) in [
+            (
+                "huggingface",
+                "acme/ModelA: model-00001-of-00002.safetensors",
+            ),
+            (
+                "huggingface",
+                "acme/ModelB: model-00001-of-00002.safetensors",
+            ),
+            ("lmstudio", "acme/ModelC/model-00001-of-00002.safetensors"),
+        ] {
+            let mut model = stored(1, label, None);
+            model.semantics = Some(modeld_store::Semantics {
+                kind: "model".to_string(),
+                name: Some("Hf".to_string()),
+                architecture: None,
+                quant: None,
+                params: None,
+            });
+            model.references[0].provider = provider.to_string();
+            model.references[0].path = "/models/model-00001-of-00002.safetensors".into();
+            let name = display_name(&model);
+            assert_eq!(name, label);
+            names.push(name);
+        }
+        names.sort();
+        names.dedup();
+        assert_eq!(names.len(), 3);
     }
 
     #[test]

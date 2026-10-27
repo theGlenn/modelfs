@@ -51,11 +51,14 @@ pub fn load(path: &Path) -> Result<Config, String> {
 /// Expands configured roots (tilde + glob) into Manual provider roots.
 ///
 /// Only existing directories qualify; labels are prefixed with the home-relative
-/// root path so `ls` shows which project a fixture file belongs to.
+/// root path so `ls` shows which project a fixture file belongs to. The store
+/// (`~/.modeld`) is excluded from every root: a broad glob such as `~/*` must
+/// not record the store's own blobs as copies in your folders.
 #[must_use]
 pub fn manual_roots(config: &Config, home: &Path) -> Vec<ProviderRoot> {
     // Canonical home so label prefixes strip cleanly (macOS: /tmp vs /private/tmp).
     let home_canonical = home.canonicalize().unwrap_or_else(|_| home.to_path_buf());
+    let store = home_canonical.join(".modeld");
     let mut roots = Vec::new();
     for pattern in &config.scan.roots {
         let expanded = expand_home(pattern, home);
@@ -79,7 +82,7 @@ pub fn manual_roots(config: &Config, home: &Path) -> Vec<ProviderRoot> {
             roots.push(ProviderRoot {
                 kind: ProviderKind::Manual,
                 root: canonical,
-                excluded: vec![],
+                excluded: vec![store.clone()],
                 label_prefix: Some(label_prefix),
             });
         }
@@ -141,6 +144,31 @@ mod tests {
         let roots = manual_roots(&config, home.path());
 
         assert_eq!(roots.len(), 1);
+    }
+
+    #[test]
+    fn a_root_covering_home_never_scans_the_store() {
+        let home = tempfile::tempdir().expect("create temp dir");
+        let blobs = home.path().join(".modeld/blobs");
+        std::fs::create_dir_all(&blobs).expect("mkdir");
+        std::fs::write(blobs.join("sha256-x.gguf"), b"GGUF").expect("write blob");
+        std::fs::write(home.path().join("mine.gguf"), b"GGUF").expect("write model");
+        let config = Config {
+            scan: ScanConfig {
+                roots: vec![home.path().display().to_string()],
+            },
+        };
+
+        let roots = manual_roots(&config, home.path());
+        let scanned = crate::scan::scan(&roots, 1);
+
+        assert_eq!(roots.len(), 1);
+        let found: Vec<_> = scanned
+            .artifacts
+            .iter()
+            .map(|a| a.path.file_name())
+            .collect();
+        assert_eq!(found, [Some(std::ffi::OsStr::new("mine.gguf"))]);
     }
 
     #[test]

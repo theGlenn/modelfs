@@ -396,14 +396,21 @@ name = "modeld-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "glob",
+ "hex",
  "libc",
  "modeld-core",
  "modeld-formats",
  "modeld-providers",
  "modeld-store",
  "notify",
+ "serde",
+ "serde_json",
+ "sha2",
  "signal-hook",
  "tempfile",
+ "toml_edit",
+ "walkdir",
 ]
 
 [[package]]

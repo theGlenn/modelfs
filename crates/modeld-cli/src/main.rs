@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use json::ErrorCode;
 use modeld_core::Digest;
 use modeld_providers::scan::ScanOutcome;
 use modeld_store::{FileStamp, Store, StoreLock};
@@ -10,25 +11,48 @@ use std::time::Duration;
 mod consolidation;
 mod daemon;
 mod events;
+mod generation;
+mod inventory;
+mod json;
 mod launchd;
+mod pass;
 mod plan;
 mod reconcile;
+mod remove;
 mod report;
+mod rm;
 mod schedule;
 mod semantics;
 mod sync;
+mod watch;
 
 #[derive(Parser)]
 #[command(name = "modeld", version, about = "Local model storage layer")]
 struct Cli {
+    /// Write JSON Lines instead of text (doctor, ls, watch, pass, rm, daemon install/uninstall/status)
+    #[arg(long, global = true)]
+    json: bool,
     #[command(subcommand)]
     command: Command,
+}
+
+/// How a command reports: text for people, JSON Lines for programs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Output {
+    Text,
+    Json,
 }
 
 #[derive(Subcommand)]
 enum Command {
     /// Report detected providers and their scan roots
     Doctor,
+    /// Add a folder to scan and watch for models
+    Watch {
+        /// Existing folder to add (the background service picks it up automatically)
+        #[arg(value_name = "FOLDER")]
+        folder: PathBuf,
+    },
     /// Inventory local model artifacts and report exact duplicates
     Scan {
         /// Ignore files smaller than this many bytes
@@ -62,6 +86,44 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Remove a model from one app, or from every app and the store
+    #[command(group(
+        clap::ArgGroup::new("scope")
+            .required(true)
+            .args(["path", "provider", "everywhere"])
+    ))]
+    Rm {
+        /// Digests of the models (`sha256:<hex>`, as `where` and `ls --json` show)
+        #[arg(required = true, value_name = "DIGEST")]
+        digests: Vec<Digest>,
+        /// Remove this copy; repeat for several (paths `where` lists)
+        #[arg(long, value_name = "PATH")]
+        path: Vec<PathBuf>,
+        /// Remove every copy one app holds
+        #[arg(long, value_parser = ["ollama", "huggingface", "lmstudio", "xybrid", "manual"])]
+        provider: Option<String>,
+        /// Remove every copy, and the stored copy
+        #[arg(long)]
+        everywhere: bool,
+        /// Show the plan; change nothing
+        #[arg(long)]
+        dry_run: bool,
+        /// Remove only if the plan still has this id (from a dry run)
+        #[arg(long, value_name = "ID")]
+        expect_plan: Option<String>,
+        /// Remove without asking
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Run one daemon pass now: sync, then clone duplicates of stored models
+    Pass {
+        /// Sync the store but only report the clones a real pass would make
+        #[arg(long)]
+        dry_run: bool,
+        /// Ignore files smaller than this many bytes
+        #[arg(long, default_value_t = modeld_providers::scan::DEFAULT_MIN_SIZE)]
+        min_size: u64,
+    },
     /// Watch model folders; import settled downloads and clone duplicates
     Daemon {
         #[command(subcommand)]
@@ -85,30 +147,126 @@ enum DaemonAction {
     Status,
 }
 
+impl Command {
+    /// Whether `--json` is supported: only the commands the Mac app runs.
+    fn has_json_output(&self) -> bool {
+        matches!(
+            self,
+            Self::Doctor
+                | Self::Watch { .. }
+                | Self::Ls
+                | Self::Pass { .. }
+                | Self::Rm { .. }
+                | Self::Daemon {
+                    action: Some(_),
+                    ..
+                }
+        )
+    }
+}
+
 fn main() {
-    let command = Cli::parse().command;
-    if !matches!(command, Command::Daemon { action: None, .. }) {
+    let Cli { json, command } = Cli::parse();
+    let output = if json { Output::Json } else { Output::Text };
+    if output == Output::Json && !command.has_json_output() {
+        fail(
+            output,
+            ErrorCode::Unsupported,
+            "this command has no JSON output; run it without --json",
+        );
+    }
+    // JSON output, `pass`, `rm`, and the daemon keep SIGPIPE ignored, so a
+    // reader quitting never stops them: see the `json` and `pass` modules.
+    let keeps_running = matches!(
+        command,
+        Command::Pass { .. } | Command::Rm { .. } | Command::Daemon { action: None, .. }
+    );
+    if output == Output::Text && !keeps_running {
         end_quietly_on_closed_pipe();
     }
     match command {
-        Command::Doctor => doctor(),
+        Command::Doctor => doctor(output),
+        Command::Watch { folder } => watch::run(&folder, output),
         Command::Scan { min_size } => scan(min_size),
-        Command::Sync { min_size } => sync(min_size),
-        Command::Ls => ls(),
+        Command::Sync { min_size } => {
+            sync(min_size);
+            announce_change();
+        }
+        Command::Ls => ls(output),
         Command::Where { query } => locate(&query),
-        Command::Dedupe { dry_run, min_size } => dedupe(dry_run, min_size),
-        Command::Restore => restore(),
-        Command::Gc { dry_run } => gc(dry_run),
+        Command::Dedupe { dry_run, min_size } => {
+            dedupe(dry_run, min_size);
+            if !dry_run {
+                announce_change();
+            }
+        }
+        Command::Restore => {
+            restore();
+            announce_change();
+        }
+        Command::Gc { dry_run } => {
+            gc(dry_run);
+            if !dry_run {
+                announce_change();
+            }
+        }
+        Command::Rm {
+            digests,
+            path,
+            provider,
+            everywhere,
+            dry_run,
+            expect_plan,
+            yes,
+        } => {
+            let scope = match (provider, everywhere) {
+                (Some(provider), _) => remove::Scope::Provider(provider),
+                (None, true) => remove::Scope::Everywhere,
+                (None, false) => remove::Scope::Paths(path),
+            };
+            let options = rm::Options {
+                dry_run,
+                expect_plan,
+                yes,
+            };
+            rm::run(&modeld_home(), &digests, &scope, &options, output);
+        }
+        Command::Pass { dry_run, min_size } => pass::run(
+            &modeld_home(),
+            reconcile::PassOptions {
+                settle: modeld_core::consolidate::RECENT_WRITE_WINDOW,
+                min_size,
+                dry_run,
+            },
+            output,
+        ),
         Command::Daemon {
             action,
             dry_run,
             min_size,
         } => match action {
             None => daemon(dry_run, min_size),
-            Some(DaemonAction::Install) => install_agent(dry_run, min_size),
-            Some(DaemonAction::Uninstall) => uninstall_agent(),
-            Some(DaemonAction::Status) => agent_status(),
+            Some(DaemonAction::Install) => install_agent(dry_run, min_size, output),
+            Some(DaemonAction::Uninstall) => uninstall_agent(output),
+            Some(DaemonAction::Status) => agent_status(output),
         },
+    }
+}
+
+/// Reports a failure the way `output` expects, then exits with status 1.
+fn fail(output: Output, code: ErrorCode, message: impl Into<String>) -> ! {
+    let message = message.into();
+    match output {
+        Output::Json => json::emit_error(code, message),
+        Output::Text => eprintln!("{message}"),
+    }
+    std::process::exit(1)
+}
+
+/// Moves the store's generation forward so viewers refresh.
+fn announce_change() {
+    if let Err(error) = generation::bump(&modeld_home()) {
+        eprintln!("warning: could not update the store generation ({error})");
     }
 }
 
@@ -124,8 +282,12 @@ fn end_quietly_on_closed_pipe() {
     unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
 }
 
-fn doctor() {
+fn doctor(output: Output) {
     let detection = modeld_providers::detect_all();
+    if output == Output::Json {
+        json::emit_result(json::Doctor::new(&modeld_home(), &detection));
+        return;
+    }
     for unreadable in &detection.unreadable {
         eprintln!(
             "warning: {} ({}); its scan roots are unknown",
@@ -167,7 +329,7 @@ fn sync(min_size: u64) {
         println!("No known model providers detected.");
     }
     let outcome = detection.scan(min_size);
-    let store = open_store();
+    let store = open_store(Output::Text);
     let report = sync::run(&store, outcome, Duration::ZERO, print_hashing);
     for skipped in &report.skipped {
         eprintln!("skip {} ({})", skipped.path.display(), skipped.reason);
@@ -190,8 +352,19 @@ fn sync(min_size: u64) {
     }
 }
 
-fn ls() {
-    let store = open_store();
+fn ls(output: Output) {
+    let store = open_store(output);
+    if output == Output::Json {
+        match inventory::Inventory::read(&store, &modeld_providers::detect_all()) {
+            Ok(inventory) => json::emit_result(json::Ls::from(&inventory)),
+            Err(error) => fail(
+                output,
+                ErrorCode::RegistryUnreadable,
+                format!("cannot read registry: {error}"),
+            ),
+        }
+        return;
+    }
     match (store.artifacts(), store.totals()) {
         (Ok(artifacts), Ok(totals)) => {
             if artifacts.is_empty() {
@@ -208,7 +381,7 @@ fn ls() {
 }
 
 fn locate(query: &str) {
-    let store = open_store();
+    let store = open_store(Output::Text);
     match store.find(query) {
         Ok(matches) if matches.is_empty() => {
             println!("No stored artifact matches `{query}` — run `modeld sync` first?");
@@ -230,7 +403,7 @@ fn dedupe(dry_run: bool, min_size: u64) {
         eprintln!("skip {} ({})", skipped.path.display(), skipped.reason);
     }
     let groups = modeld_core::dedup::duplicate_groups(&outcome.artifacts);
-    let store = open_store();
+    let store = open_store(Output::Text);
     let mut replacements = Vec::new();
 
     for group in &groups {
@@ -302,9 +475,13 @@ fn dedupe(dry_run: bool, min_size: u64) {
     }
 
     let journal = open_journal();
-    let result = consolidation::apply(&store, &journal, &replacements, |warning| {
-        eprintln!("warning: {warning}");
-    });
+    let result = consolidation::apply(
+        &store,
+        &journal,
+        &replacements,
+        |_| {},
+        |warning| eprintln!("warning: {warning}"),
+    );
     print!("{}", report::render_consolidation(&result, "Freed"));
 }
 
@@ -337,7 +514,7 @@ fn restore() {
     let journal = open_journal();
     match modeld_core::consolidate::restore(&journal) {
         Ok(result) => {
-            let store = open_store();
+            let store = open_store(Output::Text);
             for path in &result.completed {
                 if let Err(error) = store.forget_shared_path(path) {
                     eprintln!(
@@ -359,7 +536,7 @@ fn restore() {
 /// journaled swap, no live clone recorded in `shared_paths`.
 fn gc(dry_run: bool) {
     let _lock = lock_store();
-    let store = open_store();
+    let store = open_store(Output::Text);
     let journal = open_journal();
     // A journaled swap needs its canonical blob to restore; without a readable
     // journal we cannot prove any blob is safe to delete.
@@ -443,13 +620,14 @@ fn scan_and_hash(min_size: u64) -> Option<ScanOutcome> {
     Some(outcome)
 }
 
-fn open_store() -> Store {
+fn open_store(output: Output) -> Store {
     match Store::open(modeld_home()) {
         Ok(store) => store,
-        Err(error) => {
-            eprintln!("cannot open store: {error}");
-            std::process::exit(1);
-        }
+        Err(error) => fail(
+            output,
+            ErrorCode::StoreUnavailable,
+            format!("cannot open store: {error}"),
+        ),
     }
 }
 
@@ -465,53 +643,79 @@ fn daemon(dry_run: bool, min_size: u64) {
     }
 }
 
-fn install_agent(dry_run: bool, min_size: u64) {
+fn install_agent(dry_run: bool, min_size: u64, output: Output) {
     let home = home_dir();
     let arguments = launchd::daemon_arguments(dry_run, min_size);
     match launchd::install(&home, arguments) {
+        Ok(paths) if output == Output::Json => {
+            json::emit_result(json::DaemonInstall::new(&paths, daemon_status(&home)));
+        }
         Ok(paths) => {
             println!("Installed login agent {}", launchd::LABEL);
             println!("  binary  {}", paths.binary.display());
             println!("  agent   {}", paths.plist.display());
             println!("  log     {}", paths.log.display());
-            agent_status();
+            agent_status(output);
         }
-        Err(error) => {
-            eprintln!("install failed: {error}");
-            std::process::exit(1);
-        }
+        Err(error) => fail(
+            output,
+            ErrorCode::InstallFailed,
+            format!("install failed: {error}"),
+        ),
     }
 }
 
-fn uninstall_agent() {
+fn uninstall_agent(output: Output) {
     match launchd::uninstall(&home_dir()) {
+        Ok(was_installed) if output == Output::Json => {
+            json::emit_result(json::DaemonUninstall { was_installed });
+        }
         Ok(true) => println!("Stopped and removed login agent {}", launchd::LABEL),
         Ok(false) => println!("No login agent was installed."),
-        Err(error) => {
-            eprintln!("uninstall failed: {error}");
-            std::process::exit(1);
-        }
+        Err(error) => fail(
+            output,
+            ErrorCode::UninstallFailed,
+            format!("uninstall failed: {error}"),
+        ),
     }
 }
 
-fn agent_status() {
+fn agent_status(output: Output) {
     let home = home_dir();
-    let status = launchd::status(&home);
-    let state = match (status.installed, status.loaded, status.pid) {
-        (_, true, Some(pid)) => format!("running (pid {pid})"),
-        (_, true, None) => "loaded, not running".to_string(),
-        (true, false, _) => "installed, not loaded (starts at next login)".to_string(),
-        (false, false, _) => "not installed".to_string(),
+    if output == Output::Json {
+        json::emit_result(daemon_status(&home));
+        return;
+    }
+    let state = match launchd::status(&home).state() {
+        launchd::AgentState::Running { pid } => format!("running (pid {pid})"),
+        launchd::AgentState::Loaded => "loaded, not running".to_string(),
+        launchd::AgentState::Installed => {
+            "installed, not loaded (starts at next login)".to_string()
+        }
+        launchd::AgentState::NotInstalled => "not installed".to_string(),
     };
     println!("Login agent: {state}");
     let log = launchd::AgentPaths::for_home(&home).log;
     if let Ok(contents) = std::fs::read_to_string(&log) {
         println!("Recent log ({}):", log.display());
-        let lines: Vec<&str> = contents.lines().collect();
-        for line in &lines[lines.len().saturating_sub(5)..] {
+        for line in launchd::recent_lines(&contents, launchd::RECENT_LOG_LINES) {
             println!("  {line}");
         }
     }
+}
+
+/// Everything `daemon status --json` reports about the agent.
+fn daemon_status(home: &Path) -> json::DaemonStatus {
+    let paths = launchd::AgentPaths::for_home(home);
+    let installed = launchd::installed_agent(home);
+    let log = std::fs::read_to_string(&paths.log).ok();
+    json::DaemonStatus::new(&json::AgentFacts {
+        status: &launchd::status(home),
+        paths: &paths,
+        installed: installed.as_ref(),
+        binary_is_current: launchd::binary_matches_current(home),
+        log: log.as_deref(),
+    })
 }
 
 /// Serializes this command with the daemon and other mutating commands.

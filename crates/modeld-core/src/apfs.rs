@@ -11,6 +11,8 @@
 //!
 //! [`shares_extents`] (`fcntl(F_LOG2PHYS_EXT)`) answers the inverse question —
 //! are two files already clones? — for files modeld did not record cloning.
+//! [`private_size`] (`getattrlist(ATTR_CMNEXT_PRIVATESIZE)`) says how many bytes
+//! deleting one file would free: the blocks no clone shares.
 //!
 //! Measured on this project's dev machine: cloning a 44 MB blob allocated 0 blocks.
 
@@ -87,6 +89,73 @@ pub fn shares_extents(a: &Path, b: &Path) -> io::Result<bool> {
         }
     }
     Ok(true)
+}
+
+/// Bytes only `path` holds: what deleting it alone would free.
+///
+/// Blocks a clone (or the file a clone was made from) still shares are not
+/// counted. Clone IDs (`ATTR_CMNEXT_CLONEID`) cannot replace this: a clone
+/// gets a new ID as soon as one block diverges, while it still shares the
+/// rest.
+///
+/// # Errors
+/// The path cannot be read, or the filesystem does not report private sizes
+/// (only APFS does).
+pub fn private_size(path: &Path) -> io::Result<u64> {
+    /// The reply layout: attributes arrive in bit order after the header.
+    #[repr(C, packed(4))]
+    struct Reply {
+        length: u32,
+        returned: libc::attribute_set_t,
+        private_size: libc::off_t,
+    }
+
+    let path_c = cstring(path)?;
+    let mut request = libc::attrlist {
+        bitmapcount: libc::ATTR_BIT_MAP_COUNT,
+        reserved: 0,
+        commonattr: libc::ATTR_CMN_RETURNED_ATTRS,
+        volattr: 0,
+        dirattr: 0,
+        fileattr: 0,
+        forkattr: libc::ATTR_CMNEXT_PRIVATESIZE,
+    };
+    let mut reply = Reply {
+        length: 0,
+        returned: libc::attribute_set_t {
+            commonattr: 0,
+            volattr: 0,
+            dirattr: 0,
+            fileattr: 0,
+            forkattr: 0,
+        },
+        private_size: 0,
+    };
+    // SAFETY: `path_c` is a valid NUL-terminated C string, `request` a valid
+    // attrlist, and `reply` a writable buffer of exactly the size passed;
+    // getattrlist writes at most that many bytes and keeps no pointers.
+    let rc = unsafe {
+        libc::getattrlist(
+            path_c.as_ptr(),
+            (&raw mut request).cast(),
+            (&raw mut reply).cast(),
+            std::mem::size_of::<Reply>(),
+            libc::FSOPT_ATTR_CMN_EXTENDED | libc::FSOPT_NOFOLLOW,
+        )
+    };
+    if rc != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let returned = reply.returned.forkattr;
+    if returned & libc::ATTR_CMNEXT_PRIVATESIZE == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "filesystem reports no private size",
+        ));
+    }
+    let size = reply.private_size;
+    u64::try_from(size)
+        .map_err(|_negative| io::Error::new(io::ErrorKind::InvalidData, "negative private size"))
 }
 
 /// Physical device offset backing byte `offset` of `file`.
@@ -188,6 +257,32 @@ mod tests {
         file.sync_all().expect("sync");
 
         assert!(!shares_extents(&src, &dst).expect("map"));
+    }
+
+    #[test]
+    fn private_size_drops_to_zero_when_cloned_and_grows_where_rewritten() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let src = dir.path().join("src");
+        let dst = dir.path().join("dst");
+        allocated_file(&src);
+        let alone = private_size(&src).expect("private size");
+
+        clone_file(&src, &dst).expect("clonefile");
+        let shared = (
+            private_size(&src).expect("src"),
+            private_size(&dst).expect("dst"),
+        );
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&dst)
+            .expect("open clone");
+        std::io::Write::write_all(&mut file, &vec![1u8; 64 * 1024]).expect("rewrite start");
+        file.sync_all().expect("sync");
+        let diverged = private_size(&dst).expect("dst after rewrite");
+
+        assert!(alone >= 256 * 1024, "{alone}");
+        assert_eq!(shared, (0, 0));
+        assert!(diverged >= 64 * 1024 && diverged < alone, "{diverged}");
     }
 
     #[test]
