@@ -10,6 +10,8 @@
 	<string>ModelFS</string>
 	<key>CFBundleIdentifier</key>
 	<string>dev.modeld.app</string>
+	<key>CFBundleIconFile</key>
+	<string>ModelFS.icns</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
@@ -17,9 +19,13 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>@VERSION@</string>
+	<string>@SHORT_VERSION@</string>
 	<key>CFBundleVersion</key>
+	<string>@BUILD_VERSION@</string>
+	<key>ModelFSVersion</key>
 	<string>@VERSION@</string>
+	<key>ModelFSBuildConfiguration</key>
+	<string>@CONFIGURATION@</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.utilities</string>
 	<key>LSMinimumSystemVersion</key>

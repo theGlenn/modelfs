@@ -20,6 +20,13 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Test release gates, packaging, and Homebrew definitions
+        run: |
+          bash -n scripts/build-app.sh scripts/package-app.sh scripts/sign-and-notarize.sh
+          python3 -m unittest discover -s scripts/tests -p 'test_*.py'
       - name: Install the pinned toolchain
         run: rustup toolchain install --no-self-update
       - run: cargo fmt --all --check
@@ -30,18 +37,24 @@ jobs:
     name: app (build, test, bundle)
     # Package.swift needs Swift 6.2 (Xcode 26), and the app macOS 15 or later.
     runs-on: macos-26
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
       - name: Install the pinned toolchain
-        run: rustup toolchain install --no-self-update
+        run: |
+          rustup toolchain install --no-self-update
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
       - run: cargo build --locked -p modeld-cli
       - run: swift build --package-path app
       - name: swift test (end to end against the engine just built)
         run: swift test --package-path app
         env:
           MODELD_BIN: ${{ github.workspace }}/target/debug/modeld
-      - run: scripts/build-app.sh
+      - run: scripts/build-app.sh --release --universal
+      - run: scripts/tests/test-app-package.sh
 
   test-intel:
     name: test (Intel)

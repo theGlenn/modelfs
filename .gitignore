@@ -2,6 +2,7 @@
 /dist
 /app/.build
 /app/.swiftpm
+__pycache__/
 .DS_Store
 *.md
 !README.md
@@ -11,3 +12,4 @@
 !DECISIONS.md
 !providers/*.md
 !schema/*.md
+!docs/releasing.md

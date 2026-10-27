@@ -494,20 +494,35 @@ on stable Rust cannot break the build unrelated to any change. CI runs on
 macOS because the tests make real APFS clones, and runs the tests on both an
 Apple Silicon and an Intel runner because releases ship both.
 
-**Releases come from tags.** Pushing `v<version>` checks that the tag matches
-the crate version, runs the tests, builds Apple Silicon and Intel binaries,
-merges them into one universal `modeld` with `lipo`, and publishes the
-tarball and its SHA-256 as a GitHub release.
+**Releases come from stable version tags.** Pushing `v<version>` checks that
+the tag matches the crate version and points at a commit included in `master`,
+runs the Rust and Swift tests, and builds one universal app for Apple Silicon
+and Intel. A temporary keychain supplies the Developer ID Application identity;
+the nested engine and app are signed with hardened runtime and timestamps.
+The app is notarized and stapled before packaging; the DMG is then signed,
+notarized, stapled, and verified. The workflow publishes only after these
+steps succeed. Missing signing credentials fail the release rather than
+publishing a test artifact.
 
-**Homebrew installs the prebuilt binary** from a personal tap
-(`theGlenn/homebrew-tap`). A from-source formula would make every user install
-Rust and compile for minutes, and homebrew-core requires source builds and a
-track record. The linker's ad-hoc signature is enough, because Homebrew
-downloads are not quarantined. `brew install theGlenn/tap/modelfs` names the
-formula in full, which satisfies Homebrew's tap trust without a separate
-`brew trust`. The release job updates the formula's URL and checksum through
-a token scoped to the tap; without the token it warns, and the formula is
-updated by hand.
+**The app and CLI ship the same engine bytes.** The CLI archive copies the
+already signed engine from the app. Rebuilding or signing it separately would
+change its bytes and cause the service's binary comparison to report an update
+even at the same version. The DMG and CLI archive receive checksums after their
+contents, signatures, and notarization tickets are final.
+
+**Homebrew has two installation routes** in the personal tap
+(`theGlenn/homebrew-tap`): the existing `modelfs` formula installs the CLI;
+`brew install --cask theGlenn/tap/modelfs` installs the app. The cask does not
+link a second `modeld` into PATH or automatically install a service. The release
+job updates both URLs and checksums with a token scoped to the tap.
+
+**Service lifetime is independent of app installation.** Replacing or removing
+the app preserves the shared service and its environment. The app offers the
+existing explicit service Update/Turn off controls; the cask's explicit zap
+also removes the service. Store blobs and provider files are never part of
+cask cleanup. Initial app updates use a new download or Homebrew upgrade;
+an in-app updater can be added later. See [docs/releasing.md](docs/releasing.md)
+for credentials, packaging commands, and release smoke tests.
 
 ## Not built yet
 

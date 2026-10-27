@@ -1,7 +1,7 @@
 name: Release
 
-# Pushing a tag like v0.1.0 publishes a GitHub release with a universal macOS
-# binary, then points the Homebrew formula at it.
+# Only stable, merged version tags can publish. Missing signing/notary/tap
+# credentials fail before compilation; ad-hoc artifacts never reach a release.
 on:
   push:
     tags: ["v*"]
@@ -9,100 +9,134 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   release:
-    name: Build and publish
-    runs-on: macos-latest
-    timeout-minutes: 30
+    name: Test, sign, notarize, and publish
+    if: github.repository == 'theGlenn/modelfs'
+    # Swift 6.2+, notarization tools, and macOS 15 deployment support.
+    runs-on: macos-26
+    timeout-minutes: 150
     permissions:
       contents: write
     outputs:
       version: ${{ steps.version.outputs.version }}
       archive: ${{ steps.package.outputs.archive }}
       sha256: ${{ steps.package.outputs.sha256 }}
+      dmg: ${{ steps.package.outputs.dmg }}
+      dmg_sha256: ${{ steps.package.outputs.dmg_sha256 }}
     steps:
       - uses: actions/checkout@v7
-      - name: Install the pinned toolchain
-        run: |
-          rustup toolchain install --no-self-update
-          rustup target add aarch64-apple-darwin x86_64-apple-darwin
-      - name: Check the tag matches the crate version
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Validate tag, master ancestry, and required release credentials
         id: version
         env:
           TAG: ${{ github.ref_name }}
+          APPLE_DEVELOPER_ID_P12_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_P12_BASE64 }}
+          APPLE_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
+          APPLE_DEVELOPER_ID_IDENTITY: ${{ secrets.APPLE_DEVELOPER_ID_IDENTITY }}
+          APPLE_NOTARY_KEY_P8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: python3 scripts/release-preflight.py --require-homebrew-token
+      - name: Install the pinned toolchain and both Mac architectures
         run: |
-          version=$(cargo metadata --no-deps --format-version 1 --locked \
-            | jq -r '.packages[] | select(.name == "modeld-cli") | .version')
-          if [ "$TAG" != "v$version" ]; then
-            echo "::error::tag $TAG does not match modeld-cli version $version"
-            exit 1
-          fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-      - name: Test
-        run: cargo test --workspace --locked
-      - name: Build a universal binary
+          rustup toolchain install --no-self-update
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          swift --version
+      - name: Check release and packaging helpers
         run: |
-          cargo build --release --locked -p modeld-cli --target aarch64-apple-darwin
-          cargo build --release --locked -p modeld-cli --target x86_64-apple-darwin
-          mkdir -p dist
-          lipo -create -output dist/modeld \
-            target/aarch64-apple-darwin/release/modeld \
-            target/x86_64-apple-darwin/release/modeld
-          lipo -info dist/modeld
-          dist/modeld --version
-      - name: Package
+          bash -n scripts/build-app.sh scripts/package-app.sh scripts/sign-and-notarize.sh
+          python3 -m unittest discover -s scripts/tests -p 'test_*.py'
+      - name: Test Rust and Swift, then build, sign, notarize, and staple both artifacts
         id: package
         env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          name="modelfs-$VERSION-macos-universal"
-          mkdir "$name"
-          cp dist/modeld README.md LICENSE-MIT LICENSE-APACHE "$name/"
-          tar -czf "$name.tar.gz" "$name"
-          shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
-          echo "archive=$name.tar.gz" >> "$GITHUB_OUTPUT"
-          echo "sha256=$(cut -d ' ' -f 1 "$name.tar.gz.sha256")" >> "$GITHUB_OUTPUT"
-      - name: Publish the GitHub release
+          TAG: ${{ github.ref_name }}
+          MODELFS_BUILD_NUMBER: ${{ github.run_number }}
+          APPLE_DEVELOPER_ID_P12_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_P12_BASE64 }}
+          APPLE_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
+          APPLE_DEVELOPER_ID_IDENTITY: ${{ secrets.APPLE_DEVELOPER_ID_IDENTITY }}
+          APPLE_NOTARY_KEY_P8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: scripts/sign-and-notarize.sh
+      - name: Publish the verified artifacts together
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
           VERSION: ${{ steps.version.outputs.version }}
           ARCHIVE: ${{ steps.package.outputs.archive }}
+          DMG: ${{ steps.package.outputs.dmg }}
         run: |
-          gh release create "$TAG" "$ARCHIVE" "$ARCHIVE.sha256" \
-            --verify-tag --generate-notes --title "ModelFS $VERSION"
+          cd dist
+          shasum -a 256 -c "$ARCHIVE.sha256" "$DMG.sha256"
+          # Draft first: an interrupted upload never exposes a partial release.
+          gh release create "$TAG" "$ARCHIVE" "$ARCHIVE.sha256" "$DMG" "$DMG.sha256" \
+            --draft --verify-tag --generate-notes --title "ModelFS $VERSION"
+          gh release edit "$TAG" --draft=false --latest
 
   homebrew:
-    name: Update the Homebrew formula
+    name: Update the CLI formula and Mac app cask
     needs: release
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Point Formula/modelfs.rb at the new release
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Check out the Homebrew tap
+        uses: actions/checkout@v7
+        with:
+          repository: theGlenn/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+          persist-credentials: false
+      - name: Update both package definitions
         env:
-          # Fine-grained token with contents:write on theGlenn/homebrew-tap only.
-          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          TAG: ${{ github.ref_name }}
           VERSION: ${{ needs.release.outputs.version }}
-          ARCHIVE: ${{ needs.release.outputs.archive }}
-          SHA256: ${{ needs.release.outputs.sha256 }}
+          CLI_SHA256: ${{ needs.release.outputs.sha256 }}
+          APP_SHA256: ${{ needs.release.outputs.dmg_sha256 }}
         run: |
-          if [ -z "$TAP_TOKEN" ]; then
-            echo "::warning::HOMEBREW_TAP_TOKEN is not set; update Formula/modelfs.rb in theGlenn/homebrew-tap by hand"
+          python3 scripts/update-homebrew.py --tap tap --version "$VERSION" \
+            --cli-sha256 "$CLI_SHA256" --app-sha256 "$APP_SHA256"
+          ruby -c tap/Formula/modelfs.rb
+          ruby -c tap/Casks/modelfs.rb
+      - name: Push the formula and cask in one commit
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          VERSION: ${{ needs.release.outputs.version }}
+        run: |
+          if git -C tap diff --quiet && [ -z "$(git -C tap ls-files --others --exclude-standard)" ]; then
+            echo "Formula and cask already point at $VERSION"
             exit 0
           fi
-          url="https://github.com/theGlenn/modelfs/releases/download/$TAG/$ARCHIVE"
-          git clone --depth 1 "https://x-access-token:$TAP_TOKEN@github.com/theGlenn/homebrew-tap.git" tap
-          cd tap
-          sed -i -E \
-            -e "s|^  url \".*\"$|  url \"$url\"|" \
-            -e "s|^  sha256 \".*\"$|  sha256 \"$SHA256\"|" \
-            Formula/modelfs.rb
-          if git diff --quiet; then
-            echo "Formula already points at $TAG"
-            exit 0
-          fi
-          git -c user.name="github-actions[bot]" \
+          git -C tap add Formula/modelfs.rb Casks/modelfs.rb
+          git -C tap -c user.name="github-actions[bot]" \
             -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
-            commit -am "modelfs $VERSION"
-          git push
+            commit -m "modelfs $VERSION: CLI and Mac app"
+          # Keep the token out of URLs, git config, and command-line arguments.
+          askpass="$RUNNER_TEMP/modelfs-tap-askpass"
+          trap 'rm -f "$askpass"' EXIT
+          cat > "$askpass" <<'ASKPASS'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' 'x-access-token' ;;
+            *Password*) printf '%s\n' "$TAP_TOKEN" ;;
+          esac
+          ASKPASS
+          chmod 700 "$askpass"
+          export GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0
+          tap_branch="$(git -C tap symbolic-ref --short HEAD)"
+          git -C tap push origin "HEAD:$tap_branch"
