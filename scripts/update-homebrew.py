@@ -17,6 +17,8 @@ import tempfile
 RELEASES = "https://github.com/theGlenn/modelfs/releases/download"
 STABLE_VERSION = r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
 TEMPLATE = Path(__file__).resolve().parent / "homebrew" / "modelfs.rb.template"
+# The CLI archive carries the app's engine, built for the app's macOS 15.
+MACOS_REQUIREMENT = "  depends_on macos: :sequoia"
 
 
 def stable_version(value):
@@ -54,7 +56,12 @@ def updated_formula(source, version, cli_sha):
         raise ValueError("Formula/modelfs.rb must point at a known ModelFS CLI release asset")
     source = formula_field(source, "url", f"{RELEASES}/v{version}/modelfs-{version}-macos-universal.tar.gz")
     source = formula_field(source, "sha256", cli_sha)
-    return formula_field(source, "version", version, required=False)
+    source = formula_field(source, "version", version, required=False)
+    # The lookahead keeps a CRLF line ending in place.
+    requirement = re.compile(r"^  depends_on (?::macos|macos: [^\r\n]*)(?=\r?$)", re.MULTILINE)
+    if len(requirement.findall(source)) != 1:
+        raise ValueError("Formula/modelfs.rb must contain exactly one top-level macOS dependency")
+    return requirement.sub(MACOS_REQUIREMENT, source)
 
 
 def checked_destination(tap, directory, filename, required=False):

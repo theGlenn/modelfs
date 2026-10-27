@@ -36,10 +36,11 @@ After an app release updates the Homebrew tap:
 brew install --cask theGlenn/tap/modelfs
 ```
 
-For the standalone CLI, on Apple Silicon or Intel Macs:
+For the standalone CLI, on Apple Silicon or Intel Macs. From the first app
+release on, the CLI ships the app's engine and also needs macOS 15+:
 
 ```sh
-brew install theGlenn/tap/modelfs
+brew install --formula theGlenn/tap/modelfs
 modeld --version
 ```
 
@@ -236,7 +237,7 @@ $ tail ~/.modeld/daemon.log
 `modeld daemon --dry-run` previews replacements. It updates the store and
 registry without changing your apps' files.
 
-After upgrading the CLI (say, with `brew upgrade modelfs`), run
+After upgrading the CLI (say, with `brew upgrade --formula modelfs`), run
 `modeld daemon install` again to update the daemon.
 
 ## How APFS clones work
@@ -294,8 +295,9 @@ git push origin v0.2.0
 ```
 
 The release workflow validates the tag, tests the engine and app, and builds
-universal macOS artifacts. It signs, notarizes, and staples the app and DMG
-before publishing the DMG and CLI archive with checksums on GitHub Releases.
+universal macOS artifacts in a job without signing credentials. A separate job
+signs, notarizes, and staples the app and DMG before publishing the DMG and CLI
+archive with checksums on GitHub Releases.
 The CLI archive reuses the app's signed engine. A follow-up job updates both
 the Homebrew formula and app cask. Release credentials and the first-release
 checklist are documented in [docs/releasing.md](docs/releasing.md).

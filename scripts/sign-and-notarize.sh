@@ -1,7 +1,10 @@
 #!/bin/bash
-# Release gate: validate credentials, test, build, sign, notarize and package.
-# Requires the six APPLE_* secrets documented in release-preflight.py and a
-# clean checkout of a stable version tag already merged to origin/master.
+# Release gate: validate credentials, then sign, notarize and package an
+# existing unsigned build. Requires the six APPLE_* secrets documented in
+# release-preflight.py, a clean checkout of a stable version tag already merged
+# to origin/master, and dist/ from `scripts/build-app.sh --release --universal`.
+# That build and every test run elsewhere, never beside these credentials:
+# this script runs no compiler, build script, test, or built binary.
 # No publishing occurs here. Credentials live only in a temporary keychain
 # and private files; every normal exit and interrupt removes them.
 set +x
@@ -10,9 +13,13 @@ umask 077
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 version="$(python3 "$root/scripts/release-preflight.py")"
+[[ -f $root/dist/engine/modeld && -d $root/dist/ModelFS.app ]] || {
+  echo 'No unsigned build in dist/; run scripts/build-app.sh --release --universal first.' >&2
+  exit 1
+}
 
-# Copy credentials into non-exported shell variables. Cargo, Swift, and the
-# app packaging scripts must never inherit private signing/notary material.
+# Copy credentials into non-exported shell variables. The signing and
+# packaging scripts must never inherit private signing/notary material.
 certificate_base64=$APPLE_DEVELOPER_ID_P12_BASE64
 certificate_password=$APPLE_DEVELOPER_ID_P12_PASSWORD
 identity=$APPLE_DEVELOPER_ID_IDENTITY
@@ -73,18 +80,13 @@ if [[ $identities != *"\"$identity\""* ]]; then
   exit 1
 fi
 notary_auth=(--key "$work/AuthKey.p8" --key-id "$notary_key_id" --issuer "$notary_issuer")
-# Authenticate before doing any compilation, so invalid credentials fail early.
+# Authenticate before signing anything, so invalid credentials fail early.
 xcrun notarytool history "${notary_auth[@]}" --output-format json > "$work/history.json"
 
 # Private files are already mode 600 inside the mode 700 work directory.
 # Build artifacts must retain standard permissions for other Mac users.
 umask 022
-cargo fmt --all --check --manifest-path "$root/Cargo.toml"
-cargo clippy --workspace --all-targets --locked --manifest-path "$root/Cargo.toml" -- -D warnings
-cargo test --workspace --locked --manifest-path "$root/Cargo.toml"
-cargo build --locked -p modeld-cli --manifest-path "$root/Cargo.toml" --target-dir "$root/target"
-MODELD_BIN="$root/target/debug/modeld" swift test --package-path "$root/app"
-"$root/scripts/build-app.sh" --release --universal --sign "$identity" --keychain "$keychain"
+"$root/scripts/build-app.sh" --prebuilt --release --universal --sign "$identity" --keychain "$keychain"
 
 app="$root/dist/ModelFS.app"
 engine="$app/Contents/MacOS/modeld"

@@ -2,6 +2,9 @@ name: Release
 
 # Only stable, merged version tags can publish. Missing signing/notary/tap
 # credentials fail before compilation; ad-hoc artifacts never reach a release.
+# Compilers, build scripts, and tests run in a job that never receives the
+# signing secrets. The signing job only signs, notarizes, and publishes the
+# binaries that job built, and never runs them.
 on:
   push:
     tags: ["v*"]
@@ -14,20 +17,16 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
-    name: Test, sign, notarize, and publish
+  preflight:
+    name: Validate the tag and release credentials
     if: github.repository == 'theGlenn/modelfs'
-    # Swift 6.2+, notarization tools, and macOS 15 deployment support.
-    runs-on: macos-26
-    timeout-minutes: 150
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
+      # Draft releases are only listed to tokens that can write releases.
       contents: write
     outputs:
       version: ${{ steps.version.outputs.version }}
-      archive: ${{ steps.package.outputs.archive }}
-      sha256: ${{ steps.package.outputs.sha256 }}
-      dmg: ${{ steps.package.outputs.dmg }}
-      dmg_sha256: ${{ steps.package.outputs.dmg_sha256 }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -48,6 +47,37 @@ jobs:
           APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: python3 scripts/release-preflight.py --require-homebrew-token
+      # Fail in seconds, not after a full build and two notarizations.
+      - name: Refuse a tag that already has a release or draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          existing="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases" \
+            --jq '.[] | select(.tag_name == env.TAG) | if .draft then "draft" else "published" end')"
+          case "$existing" in
+            "") ;;
+            *published*)
+              echo "::error::$TAG is already published. Releases are never replaced; release a new version."
+              exit 1 ;;
+            *)
+              echo "::error::An interrupted run left a draft release for $TAG. Delete it with 'gh release delete $TAG', then re-run."
+              exit 1 ;;
+          esac
+
+  build:
+    name: Test and build the unsigned universal app
+    needs: preflight
+    # Swift 6.2+ and macOS 15 deployment support. No secrets in this job.
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
       - name: Install the pinned toolchain and both Mac architectures
         run: |
           rustup toolchain install --no-self-update
@@ -57,7 +87,59 @@ jobs:
         run: |
           bash -n scripts/build-app.sh scripts/package-app.sh scripts/sign-and-notarize.sh
           python3 -m unittest discover -s scripts/tests -p 'test_*.py'
-      - name: Test Rust and Swift, then build, sign, notarize, and staple both artifacts
+      - name: Test Rust and Swift
+        run: |
+          cargo fmt --all --check
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          cargo test --workspace --locked
+          cargo build --locked -p modeld-cli
+          MODELD_BIN="$PWD/target/debug/modeld" swift test --package-path app
+      - name: Build the unsigned universal app
+        run: |
+          scripts/build-app.sh --release --universal
+          # Artifacts drop file modes; a tarball keeps the bundle intact.
+          # Extended attributes would make codesign reject the bundle.
+          COPYFILE_DISABLE=1 tar --no-xattrs -cf "$RUNNER_TEMP/unsigned.tar" \
+            -C dist ModelFS.app engine/modeld
+      - uses: actions/upload-artifact@v7
+        with:
+          name: unsigned-app
+          path: ${{ runner.temp }}/unsigned.tar
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    name: Sign, notarize, and publish
+    needs: [preflight, build]
+    # Notarization tools and the same Xcode as the build job.
+    runs-on: macos-26
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    outputs:
+      archive: ${{ steps.package.outputs.archive }}
+      sha256: ${{ steps.package.outputs.sha256 }}
+      dmg: ${{ steps.package.outputs.dmg }}
+      dmg_sha256: ${{ steps.package.outputs.dmg_sha256 }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Install the pinned toolchain (reads the version; nothing compiles)
+        run: rustup toolchain install --no-self-update
+      - uses: actions/download-artifact@v8
+        with:
+          name: unsigned-app
+          path: ${{ runner.temp }}/unsigned
+      - name: Unpack the unsigned build
+        run: |
+          mkdir -p dist
+          tar -xf "$RUNNER_TEMP/unsigned/unsigned.tar" -C dist
+      - name: Sign, notarize, and staple both artifacts
         id: package
         env:
           TAG: ${{ github.ref_name }}
@@ -73,7 +155,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ needs.preflight.outputs.version }}
           ARCHIVE: ${{ steps.package.outputs.archive }}
           DMG: ${{ steps.package.outputs.dmg }}
         run: |
@@ -86,7 +168,7 @@ jobs:
 
   homebrew:
     name: Update the CLI formula and Mac app cask
-    needs: release
+    needs: [preflight, release]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -105,7 +187,7 @@ jobs:
           persist-credentials: false
       - name: Update both package definitions
         env:
-          VERSION: ${{ needs.release.outputs.version }}
+          VERSION: ${{ needs.preflight.outputs.version }}
           CLI_SHA256: ${{ needs.release.outputs.sha256 }}
           APP_SHA256: ${{ needs.release.outputs.dmg_sha256 }}
         run: |
@@ -116,7 +198,7 @@ jobs:
       - name: Push the formula and cask in one commit
         env:
           TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          VERSION: ${{ needs.release.outputs.version }}
+          VERSION: ${{ needs.preflight.outputs.version }}
         run: |
           if git -C tap diff --quiet && [ -z "$(git -C tap ls-files --others --exclude-standard)" ]; then
             echo "Formula and cask already point at $VERSION"

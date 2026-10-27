@@ -32,11 +32,18 @@ Use an App Store Connect API key with access to notarization. See Apple's
 [notarization documentation](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution).
 The release scripts use a temporary keychain and credential files, remove them
 on exit, and do not persist signing credentials in the app or release assets.
+Tests and compilation run in a separate job that never receives these secrets;
+the signing job signs that job's binaries without compiling or running them.
 
 All seven secrets are required by the release workflow's preflight, including
 the Homebrew token for the separate tap update. Missing credentials fail before
-compilation or publication. A failed tap update can be retried without rebuilding
-or changing the published release assets.
+compilation or publication.
+
+If only the tap update fails, re-run just that failed job: it reuses the
+published assets without rebuilding. Re-running the whole workflow stops at
+preflight, because the tag already has a release. If a run stopped after
+creating its draft release, delete the draft with `gh release delete vX.Y.Z`,
+then re-run.
 
 ## Prepare and publish
 
@@ -52,10 +59,12 @@ or changing the published release assets.
    git push origin v0.2.0
    ```
 
-4. Watch the **Release** workflow. It validates the version and source commit,
-   runs Rust and Swift tests, builds the universal app, signs its executables,
-   notarizes and staples the app, then creates, signs, notarizes, and staples
-   the DMG. It verifies the final artifacts before publishing.
+4. Watch the **Release** workflow. It validates the version, source commit,
+   and that the tag has no release yet. A job without credentials runs the Rust
+   and Swift tests and builds the unsigned universal app. The signing job then
+   signs its executables, notarizes and staples the app, then creates, signs,
+   notarizes, and staples the DMG. It verifies the final artifacts before
+   publishing.
 5. The release contains:
 
    ```text
@@ -105,13 +114,15 @@ Users can download the DMG from [GitHub Releases](https://github.com/theGlenn/mo
 and drag ModelFS into Applications. After an app release updates the tap:
 
 ```sh
-brew install --cask theGlenn/tap/modelfs  # Mac app
-brew install theGlenn/tap/modelfs         # Standalone modeld CLI
+brew install --cask theGlenn/tap/modelfs     # Mac app
+brew install --formula theGlenn/tap/modelfs  # Standalone modeld CLI
 ```
 
 The app includes its engine and does not need the CLI formula. The cask installs
 only the app; the formula owns the `modeld` command on PATH. Both use the same
-store, configuration, lock, and per-user background service.
+store, configuration, lock, and per-user background service. They share the
+name `modelfs`, so pass `--formula` or `--cask` rather than let Homebrew guess.
+Both need macOS 15+: the CLI archive carries the app's engine.
 
 Update by replacing the app from a new DMG, or:
 

@@ -502,7 +502,14 @@ the nested engine and app are signed with hardened runtime and timestamps.
 The app is notarized and stapled before packaging; the DMG is then signed,
 notarized, stapled, and verified. The workflow publishes only after these
 steps succeed. Missing signing credentials fail the release rather than
-publishing a test artifact.
+publishing a test artifact, and a tag that already has a release or draft fails
+before building.
+
+**Release credentials never meet build code.** Compiling and testing run every
+dependency's build scripts and tests; a separate job does that without secrets
+and hands over the unsigned app. The signing job signs those binaries and never
+compiles or runs them. Separate steps of one job would not be enough: a step can
+leave a process running, or change the environment of every later step.
 
 **The app and CLI ship the same engine bytes.** The CLI archive copies the
 already signed engine from the app. Rebuilding or signing it separately would
@@ -514,7 +521,9 @@ contents, signatures, and notarization tickets are final.
 (`theGlenn/homebrew-tap`): the existing `modelfs` formula installs the CLI;
 `brew install --cask theGlenn/tap/modelfs` installs the app. The cask does not
 link a second `modeld` into PATH or automatically install a service. The release
-job updates both URLs and checksums with a token scoped to the tap.
+job updates both URLs and checksums with a token scoped to the tap. Because the
+CLI archive carries the app's engine, built for macOS 15, the job also pins the
+formula to macOS 15; older Macs keep the last CLI release that ran there.
 
 **Service lifetime is independent of app installation.** Replacing or removing
 the app preserves the shared service and its environment. The app offers the

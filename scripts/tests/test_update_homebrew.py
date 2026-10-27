@@ -75,7 +75,8 @@ class UpdateHomebrewTests(unittest.TestCase):
         self.assertEqual(
             self.formula.read_text(),
             FORMULA.replace(OLD_URL, OLD_URL.replace("0.1.0", "0.2.0"))
-            .replace(OLD_SHA, CLI_SHA),
+            .replace(OLD_SHA, CLI_SHA)
+            .replace("depends_on :macos", "depends_on macos: :sequoia"),
         )
         cask = (self.tap / "Casks" / "modelfs.rb").read_text()
         self.assertIn('version "0.2.0"', cask)
@@ -126,6 +127,8 @@ class UpdateHomebrewTests(unittest.TestCase):
             FORMULA.replace("  sha256", "  # sha256"),
             FORMULA.replace("class Modelfs < Formula", "class Other < Formula"),
             FORMULA.replace(f'  sha256 "{OLD_SHA}"', f'  sha256 "{OLD_SHA}"\n  sha256 "{OLD_SHA}"'),
+            FORMULA.replace("  depends_on :macos\n", ""),
+            FORMULA.replace("  depends_on :macos", "  depends_on :macos\n  depends_on macos: :sonoma"),
         ]:
             with self.subTest(source=source):
                 self.formula.write_text(source)
@@ -141,7 +144,15 @@ class UpdateHomebrewTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         expected = source.replace(OLD_URL, OLD_URL.replace("0.1.0", "0.2.0"))
         expected = expected.replace(OLD_SHA, CLI_SHA).replace('version "0.1.0"', 'version "0.2.0"')
+        expected = expected.replace("depends_on :macos", "depends_on macos: :sequoia")
         self.assertEqual(self.formula.read_bytes(), expected.replace("\n", "\r\n").encode())
+
+    def test_formula_requires_the_engines_macos_version(self):
+        self.formula.write_text(FORMULA.replace("depends_on :macos", 'depends_on macos: ">= :ventura"'))
+        self.assertEqual(self.run_helper().returncode, 0)
+        formula = self.formula.read_text()
+        self.assertIn("  depends_on macos: :sequoia\n", formula)
+        self.assertNotIn("ventura", formula)
 
     def test_symlinked_destination_is_refused_without_following_it(self):
         outside = self.tap / "outside.rb"

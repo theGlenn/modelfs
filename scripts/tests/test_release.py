@@ -121,7 +121,10 @@ if name == "xcrun":
         stage += ":" + ("dmg" if args[2].endswith(".dmg") else "app")
 with open(os.environ["RELEASE_TEST_LOG"], "a") as log:
     log.write(stage + "\\n")
-if name in ["cargo", "swift", "build-app.sh"]:
+if name in ["cargo", "swift"]:
+    sys.exit("compilers and tests must never run beside release credentials")
+if name == "build-app.sh":
+    assert args[0] == "--prebuilt", "signing must reuse the unsigned build"
     assert "APPLE_NOTARY_KEY_P8" not in os.environ, "notary key leaked to build"
     assert "APPLE_DEVELOPER_ID_P12_BASE64" not in os.environ, "certificate leaked to build"
     mask = os.umask(0)
@@ -153,7 +156,7 @@ elif name == "ditto":
 elif name == "build-app.sh":
     root = pathlib.Path(__file__).resolve().parents[1]
     macos = root / "dist/ModelFS.app/Contents/MacOS"
-    macos.mkdir(parents=True)
+    macos.mkdir(parents=True, exist_ok=True)
     (macos / "ModelFS").write_bytes(b"signed-app")
     (macos / "modeld").write_bytes(b"exact-signed-engine")
 elif name == "package-app.sh":
@@ -170,13 +173,18 @@ elif name == "package-app.sh":
             path.write_text(stub)
             path.chmod(0o755)
         # The signing helper only accepts exact tagged sources, including the
-        # fixture's fake build/package scripts.
+        # fixture's fake build/package scripts. The unsigned build is ignored.
+        (self.root / ".gitignore").write_text("/dist/\n")
         self.git("add", ".")
         self.git("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "stub macOS commands")
         self.git("update-ref", "refs/remotes/origin/master", "HEAD")
         self.git("tag", "-f", "v0.1.0")
 
-    def sign(self, mode="success"):
+    def sign(self, mode="success", prebuilt=True):
+        if prebuilt:
+            (self.root / "dist/engine").mkdir(parents=True, exist_ok=True)
+            (self.root / "dist/engine/modeld").write_bytes(b"unsigned-engine")
+            (self.root / "dist/ModelFS.app/Contents/MacOS").mkdir(parents=True, exist_ok=True)
         self.env["RELEASE_TEST_MODE"] = mode
         return subprocess.run(
             ["bash", "scripts/sign-and-notarize.sh"], cwd=self.root,
@@ -196,6 +204,16 @@ elif name == "package-app.sh":
                 if mode.endswith("-rejected"):
                     self.assertIn("Notarization submission ID:", result.stderr)
                     self.assertIn("notarytool log", result.stderr)
+
+    def test_missing_unsigned_build_fails_before_credentials_are_imported(self):
+        self.install_stubs()
+        result = self.sign(prebuilt=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("scripts/build-app.sh --release --universal", result.stderr)
+        log = Path(self.env["RELEASE_TEST_LOG"])
+        self.assertNotIn("security:", log.read_text() if log.exists() else "")
+        self.assertEqual(list(Path(self.env["RUNNER_TEMP"]).iterdir()), [])
+        self.assert_private(result)
 
     def test_cleanup_failure_prevents_publication_even_after_successful_packaging(self):
         self.install_stubs()
@@ -222,7 +240,8 @@ elif name == "package-app.sh":
         self.assertEqual(list(Path(self.env["RUNNER_TEMP"]).iterdir()), [])
         self.assert_private(result)
         commands = Path(self.env["RELEASE_TEST_LOG"]).read_text().splitlines()
-        self.assertLess(commands.index("xcrun:notarytool:history"), commands.index("cargo:fmt"))
+        self.assertFalse([command for command in commands if command.startswith(("cargo:", "swift:"))])
+        self.assertLess(commands.index("xcrun:notarytool:history"), commands.index("build-app.sh:--prebuilt"))
         self.assertLess(commands.index("xcrun:notarytool:submit:app"), commands.index("package-app.sh:--release"))
         self.assertLess(commands.index("package-app.sh:--release"), commands.index("xcrun:notarytool:submit:dmg"))
 
