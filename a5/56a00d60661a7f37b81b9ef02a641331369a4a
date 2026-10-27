@@ -1,0 +1,67 @@
+.github/workflows/ci.yml
+  s_c65cc0017c1522::t_f41f7398f654dd 23-29,40,43-45,47-49,56-57
+.github/workflows/release.yml
+  s_c65cc0017c1522::t_368d37a9e042db 3-4,12-15,18-22,29-30,33-39,43-51,53-56,58-60,63-72,78,80-85,88,93-116,121-122,125-126,128-142
+.gitignore
+  s_883ccbd23a1ebe::t_351135c443616c 5,15
+DECISIONS.md
+  s_c65cc0017c1522::t_cd877554a42c4d 497-525
+README.md
+  s_c65cc0017c1522::t_0c1dcea2e90938 26-39,117-118,135-142,296-301
+docs/releasing.md
+  s_c65cc0017c1522::t_10ed9d32e22f50 1-130
+scripts/app/Info.plist
+  s_883ccbd23a1ebe::t_1ee9b4ff91d98b 13-14,22,24-25,27-28
+scripts/app/verify.py
+  s_c65cc0017c1522::t_7d8a000f243e2f 1-90
+scripts/app/version.py
+  s_883ccbd23a1ebe::t_6a25cda2c6190f 1-64
+scripts/build-app.sh
+  s_883ccbd23a1ebe::t_a1c7a04f4721dc 4,11-15,26,32-33,39-46,76-79,81,86-89,93-96
+scripts/generate-app-icon.sh
+  s_c65cc0017c1522::t_8ed41fe87f2659 1-8
+scripts/homebrew/modelfs.rb.template
+  s_883ccbd23a1ebe::t_fa5e98b9ec5fd5 1-29
+scripts/release-preflight.py
+  s_883ccbd23a1ebe::t_ece5af62e5d0f8 1-93
+scripts/sign-and-notarize.sh
+  s_883ccbd23a1ebe::t_e21c3253db7f86 1-151
+scripts/tests/test_app_version.py
+  s_c65cc0017c1522::t_3e6722ef486032 1-33
+scripts/tests/test_release.py
+  s_883ccbd23a1ebe::t_92b8c57c47451d 1-231
+scripts/tests/test_update_homebrew.py
+  s_c65cc0017c1522::t_9b503605e8001e 1-159
+scripts/app/render-icon.swift
+  s_883ccbd23a1ebe::t_1c537e15c07180 1-71
+scripts/package-app.sh
+  s_c65cc0017c1522::t_93c3427fdfa6ca 1-75
+scripts/tests/test-app-package.sh
+  s_c65cc0017c1522::t_686cc4a59c4386 1-38
+scripts/update-homebrew.py
+  s_883ccbd23a1ebe::t_42717514f6e785 1-125
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "a556a00d60661a7f37b81b9ef02a641331369a4a",
+  "prompts": {},
+  "sessions": {
+    "s_883ccbd23a1ebe": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "01a176ca-823d-7613-8af1-4acbd8fa70c5",
+        "model": "unknown"
+      },
+      "human_author": "Glenn Sonna <3216616+theGlenn@users.noreply.github.com>"
+    },
+    "s_c65cc0017c1522": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a176ca-823d-7613-8af1-4acbd8fa70c5",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "Glenn Sonna <3216616+theGlenn@users.noreply.github.com>"
+    }
+  }
+}
