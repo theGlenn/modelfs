@@ -23,10 +23,24 @@ ModelFS is in early development. See [How it stays safe](#how-it-stays-safe).
 
 ## Install
 
-With Homebrew, on Apple Silicon or Intel Macs:
+The Mac app supports Apple Silicon and Intel on macOS 15+. Signed app releases
+include `ModelFS-<version>-universal.dmg`: download it from
+[GitHub Releases](https://github.com/theGlenn/modelfs/releases), open the disk
+image, and drag ModelFS into Applications. App downloads and the cask become
+available with the first signed app release; older CLI releases only contain
+the command-line archive.
+
+After an app release updates the Homebrew tap:
 
 ```sh
-brew install theGlenn/tap/modelfs
+brew install --cask theGlenn/tap/modelfs
+```
+
+For the standalone CLI, on Apple Silicon or Intel Macs. From the first app
+release on, the CLI ships the app's engine and also needs macOS 15+:
+
+```sh
+brew install --formula theGlenn/tap/modelfs
 modeld --version
 ```
 
@@ -101,8 +115,8 @@ ModelFS also comes as a menu bar app. It shows every model across your apps,
 which ones share disk space, and what deduplicating would free, and it turns
 the background service on, off, or updates it.
 
-The app is not packaged for download yet. To build it from source, you need
-Rust and Xcode 26 or later; the app needs macOS 15 or later:
+The app includes its own engine. To build it from source, you need Rust and
+Xcode 26 or later; the app needs macOS 15 or later:
 
 ```sh
 scripts/build-app.sh --release
@@ -118,6 +132,14 @@ The Models view opens in **Grouped** mode: expand a model to see its variants,
 or choose **Flat** for the original table. Duplicates appear as cards with each
 copy's location. **Background service** separates detected **Apps** from
 expandable watched **Folders**; **Add folder…** is also in the main toolbar.
+
+Update by replacing the app from a new DMG, or run
+`brew upgrade --cask theGlenn/tap/modelfs`. If the background service needs an
+update afterward, choose **Background service → Update**. The app and CLI share
+one service and store. To also stop the service when removing the app, choose
+**Turn off** first; model files and the store are preserved. See the
+[release and installation guide](docs/releasing.md) for packaging, signing,
+upgrades, and uninstall behavior.
 
 ## CLI reference
 
@@ -215,7 +237,7 @@ $ tail ~/.modeld/daemon.log
 `modeld daemon --dry-run` previews replacements. It updates the store and
 registry without changing your apps' files.
 
-After upgrading the CLI (say, with `brew upgrade modelfs`), run
+After upgrading the CLI (say, with `brew upgrade --formula modelfs`), run
 `modeld daemon install` again to update the daemon.
 
 ## How APFS clones work
@@ -272,8 +294,13 @@ git tag v0.2.0
 git push origin v0.2.0
 ```
 
-The release workflow tests the tag, publishes a universal macOS binary on
-GitHub Releases, and updates the Homebrew formula.
+The release workflow validates the tag, tests the engine and app, and builds
+universal macOS artifacts in a job without signing credentials. A separate job
+signs, notarizes, and staples the app and DMG before publishing the DMG and CLI
+archive with checksums on GitHub Releases.
+The CLI archive reuses the app's signed engine. A follow-up job updates both
+the Homebrew formula and app cask. Release credentials and the first-release
+checklist are documented in [docs/releasing.md](docs/releasing.md).
 
 See [`DECISIONS.md`](DECISIONS.md) for design decisions and [`providers/`](providers/)
 for notes on how each app stores its models.

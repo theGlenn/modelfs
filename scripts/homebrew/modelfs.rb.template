@@ -1,0 +1,29 @@
+cask "modelfs" do
+  version "@VERSION@"
+  sha256 "@APP_SHA256@"
+
+  url "https://github.com/theGlenn/modelfs/releases/download/v#{version}/ModelFS-#{version}-universal.dmg"
+  name "ModelFS"
+  desc "Keep one copy of every local AI model, however many apps use it"
+  homepage "https://glennso.dev/modelfs"
+
+  depends_on macos: :sequoia
+
+  app "ModelFS.app"
+
+  # The login agent is shared with the CLI. Keep it running during upgrades.
+  uninstall quit: "dev.modeld.app"
+
+  # Explicit --zap removes only the shared login agent, never model data.
+  zap launchctl: "dev.modeld.daemon"
+
+  caveats <<~EOS
+    To update an existing background service after upgrading the app, open
+    ModelFS and choose Background service > Update.
+
+    Before removing the app, turn off its Background service in ModelFS.
+    brew uninstall --cask --zap theGlenn/tap/modelfs also removes the shared
+    login agent, including one installed through the modeld CLI.
+    Models and ~/.modeld are preserved, including when using --zap.
+  EOS
+end
