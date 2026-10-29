@@ -10,6 +10,7 @@ use std::time::Duration;
 
 mod consolidation;
 mod daemon;
+mod discover;
 mod events;
 mod generation;
 mod inventory;
@@ -52,6 +53,12 @@ enum Command {
         /// Existing folder to add (the background service picks it up automatically)
         #[arg(value_name = "FOLDER")]
         folder: PathBuf,
+    },
+    /// Find folders with large model files that no scan covers; changes nothing
+    Discover {
+        /// Ignore files smaller than this many bytes
+        #[arg(long, default_value_t = modeld_providers::discover::DEFAULT_MIN_SIZE)]
+        min_size: u64,
     },
     /// Inventory local model artifacts and report exact duplicates
     Scan {
@@ -187,6 +194,7 @@ fn main() {
     match command {
         Command::Doctor => doctor(output),
         Command::Watch { folder } => watch::run(&folder, output),
+        Command::Discover { min_size } => discover::run(min_size),
         Command::Scan { min_size } => scan(min_size),
         Command::Sync { min_size } => {
             sync(min_size);

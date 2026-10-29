@@ -16,7 +16,8 @@ With `modeld`, you can:
 - Browse models across apps and locate their files with `sync`, `ls`, and `where`.
 - Preview disk savings with `dedupe --dry-run`, then consolidate with `dedupe`.
 - Keep new downloads deduplicated automatically with `daemon install`.
-- Add your own model folders with `watch <folder>` or the Mac app's folder picker.
+- Add your own model folders with `watch <folder>` or the Mac app's folder picker,
+  after `discover` finds the ones holding large models.
 - Undo replacements with `restore`.
 
 ModelFS is in early development. See [How it stays safe](#how-it-stays-safe).
@@ -148,6 +149,7 @@ Use `modeld <command> --help` for options.
 | Command | What it does | Changes files? |
 |---|---|---|
 | `doctor` | Lists detected model folders and excluded paths | no |
+| `discover` | Suggests unwatched folders that hold large model files | no |
 | `scan` | Inventories model files and reports exact duplicates | no |
 | `sync` | Imports models into `~/.modeld` and indexes their metadata | store only |
 | `ls` | Lists stored models, their format, quantization, size, and which apps use them | no |
@@ -162,7 +164,8 @@ Use `modeld <command> --help` for options.
 | `daemon install` / `uninstall` / `status` | Manages the background daemon | — |
 
 `scan`, `sync`, `dedupe`, `pass`, and `daemon` scan files of at least 1 MiB by
-default. Use `--min-size <bytes>` to change this.
+default, and `discover` looks for files of at least 100 MB. Use
+`--min-size <bytes>` to change this.
 
 `doctor`, `ls`, `watch`, `pass`, `rm`, and the `daemon` subcommands accept `--json`
 for machine-readable output (JSON Lines). See [`schema/`](schema/README.md).
@@ -206,6 +209,17 @@ The command preserves your existing configuration and avoids adding the same
 folder twice. The background service picks it up automatically; if it is off,
 turn it on or run `modeld pass` to import models now. Xybrid scans include
 GGUF, safetensors, ONNX, and `.xyb` model bundles.
+
+To find folders worth adding, run `modeld discover`. It looks through your
+home folder for large model files that no scan covers and prints each folder
+with its biggest files, the space adding it could free, and the command to
+add it. A *likely copy* matches the size and sampled bytes of a stored model
+or another file it found; one *already shared* is an APFS clone and frees
+nothing. Folders at the same place in several
+projects are suggested as one glob pattern, such as `~/games/*/Assets`, so
+projects you create later are covered too. It skips `~/Library`, the Trash,
+version control, `node_modules`, build output, app bundles, and files stored
+only in the cloud, and it changes nothing.
 
 You can also add folders or glob patterns to `~/.modeld/config.toml`:
 

@@ -119,6 +119,50 @@ Scanning rules:
   unknown, so nothing they own may be treated as gone (see
   [References and pruning](#references-and-pruning)).
 
+### Suggesting folders
+
+Model files often live in project folders no provider knows about: game
+assets, test fixtures, agent scratch folders. `modeld discover` walks the home
+folder once and suggests folders to add. It only suggests: adding a folder is
+always the user's choice, because the daemon then replaces copies in it.
+
+- **Its own walk, not Spotlight.** On the machine this was built on, Spotlight
+  found 15 of 76 large model files: it skips hidden folders such as
+  `.context` and `.cache` and does not index every model format.
+- **Skipped while walking:** folders already scanned and the apps' protected
+  subtrees; `~/Library` (app data behind privacy prompts, and cloud storage);
+  the Trash and the store; `.git`, `node_modules`, `target`, `DerivedData`,
+  `.build`, and `Pods`; app and framework bundles, whose copies are build
+  output; other volumes, which clones cannot reach; and files and folders
+  stored only in the cloud (`SF_DATALESS`), since reading them downloads them.
+- **Files of at least 100 MB a scan would record.** `.bin` and `.pt` must also
+  start like weights (GGUF, GGML, a PyTorch zip or pickle). Other tools use
+  these extensions too, such as Unity's `Library/DataStore`.
+- **Copies are estimated from samples, not hashed.** Hashing every candidate
+  would take minutes per gigabyte, and a pass hashes before it replaces
+  anything. Size alone misleads: fine-tunes sharing an architecture and
+  quantization have the same byte size, and on the first real run two of
+  three same-size Gemma files held different weights. So a *likely copy*
+  matches the size and sixteen 4 KiB samples spread over a stored model or
+  another candidate.
+- **Only unshared bytes count as savings.** Copies made in Finder or with
+  `cp -c` are already APFS clones. A likely copy counts its private size
+  (`ATTR_CMNEXT_PRIVATESIZE`), so a clone shows as *already shared* and adds
+  nothing. Suggestions that would free the most come first.
+- **Suggested folders stay inside projects.** A project root is a folder with
+  `.git` (a repository or worktree) or Unity's `ProjectSettings`. A
+  suggestion is the deepest folder holding a group of files, but never the
+  home folder, a project root, or a folder containing a project: scanning
+  those would record build output and caches as models. Files directly in
+  such a folder are listed as not suggested.
+- **Sibling projects become a pattern.** When the same subfolder of several
+  projects in one parent holds models, the suggestion is a glob pattern
+  (`~/games/*/Assets`), so projects created later are covered. Names are
+  escaped, and projects directly in the home folder are not merged: `~/*/Assets`
+  would match far more than those projects.
+- **Text only.** No app runs `discover` yet, so it has no JSON output (see
+  [Machine-readable output](#machine-readable-output)).
+
 ## The store
 
 `~/.modeld` holds:

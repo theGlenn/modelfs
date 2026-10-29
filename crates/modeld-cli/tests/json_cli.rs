@@ -570,6 +570,33 @@ fn text_pass_prints_the_daemon_summary() {
     );
 }
 
+#[test]
+fn discover_suggests_an_unwatched_folder_and_changes_nothing() {
+    let home = Home::new();
+    home.settled_model("watched.gguf");
+    let assets = home.dir.path().join("game/Assets");
+    std::fs::create_dir_all(&assets).expect("create folder");
+    std::fs::write(assets.join("npc.gguf"), WEIGHTS).expect("write model");
+    let config = std::fs::read_to_string(home.store().join("config.toml")).expect("config");
+
+    let output = home
+        .modeld(&["discover", "--min-size", "1"])
+        .output()
+        .expect("run modeld");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{stdout}");
+    assert!(stdout.contains("\n~/game/Assets\n"), "{stdout}");
+    assert!(stdout.contains("modeld watch ~/game/Assets"), "{stdout}");
+    assert!(!stdout.contains("watched.gguf"), "{stdout}");
+    assert_eq!(
+        std::fs::read_to_string(home.store().join("config.toml")).expect("config"),
+        config
+    );
+    assert!(!home.store().join("registry.db").exists());
+    assert_eq!(home.generation(), None);
+}
+
 /// Asserts `path` is inside the temp home, so no test touches a real store.
 #[test]
 fn tests_never_touch_the_real_store() {
