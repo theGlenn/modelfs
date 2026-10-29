@@ -1,0 +1,75 @@
+DECISIONS.md
+  s_b6781fcff0f6f2::t_39f038906f9b5e 163-165,454-455,492-495
+README.md
+  s_b6781fcff0f6f2::t_58a16588ba4c84 136-138,160,173
+app/Sources/ModelFS/Debug/Snapshots.swift
+  s_b6781fcff0f6f2::t_64ff3e1d0b3948 11-12,28-35
+app/Sources/ModelFS/Window/BackgroundServiceView.swift
+  s_b6781fcff0f6f2::t_3113311aec6d29 74-75
+app/Sources/ModelFS/Window/MainWindow.swift
+  s_b6781fcff0f6f2::t_a319226670fddd 74
+app/Sources/ModelFS/Window/SuggestedFoldersSection.swift
+  s_b6781fcff0f6f2::t_735095c414e8d7 1-279
+app/Sources/ModelFSKit/Engine/EngineClient.swift
+  s_b6781fcff0f6f2::t_c4fd17e12ee7e5 23-43
+app/Sources/ModelFSKit/Schema/Discovery.swift
+  s_d4f694a6efe210::t_a583d031d0f0c6 1-68
+app/Sources/ModelFSKit/Schema/EngineMessage.swift
+  s_b6781fcff0f6f2::t_73fef38d5b60a9 70,75,85-86,93,116-117
+app/Sources/ModelFSKit/Schema/Watch.swift
+  s_b6781fcff0f6f2::t_dea74878e252ae 3,5,12-33
+app/Sources/ModelFSKit/State/Activity.swift
+  s_b6781fcff0f6f2::t_c7ab23d40a812a 51
+app/Sources/ModelFSKit/State/AppModel.swift
+  s_b6781fcff0f6f2::t_39135fbc08f5f6 24-26,52,202-213,221,226,251-293
+app/Sources/ModelFSKit/State/DiscoveryState.swift
+  s_b6781fcff0f6f2::t_b57d68102a2e14 1-15
+app/Tests/ModelFSKitTests/DiscoveryTests.swift
+  s_b6781fcff0f6f2::t_9a7cc75ba97dfe 1-94
+app/Tests/ModelFSKitTests/EngineProcessTests.swift
+  s_b6781fcff0f6f2::t_5414aa877e066f 32-38
+app/Tests/ModelFSKitTests/SchemaFixtureTests.swift
+  s_b6781fcff0f6f2::t_cb9b33dbe780c0 13,109-134
+crates/modeld-cli/src/discover.rs
+  s_b6781fcff0f6f2::t_fecb0694bd9e73 4-6,8-9,14,16,22-33,45-56,58-90
+crates/modeld-cli/src/json.rs
+  s_b6781fcff0f6f2::t_3ac9a1f393c5a8 6,175-176,187,207-210,248,251,258-338,1228-1301
+crates/modeld-cli/src/main.rs
+  s_b6781fcff0f6f2::t_df3a2743da1d40 33,51-56,60-63,171,205-213
+crates/modeld-cli/src/rm.rs
+  s_b6781fcff0f6f2::t_a17886324b1b86 297
+crates/modeld-cli/src/watch.rs
+  s_b6781fcff0f6f2::t_d0a10db9d65a15 1,8,11,14-24,46-117,120-127,146,165,210,221-253,261-265,268-272,283,288,296,301
+crates/modeld-cli/tests/json_cli.rs
+  s_b6781fcff0f6f2::t_085db9c3655b64 600-630
+crates/modeld-providers/src/discover.rs
+  s_b6781fcff0f6f2::t_ef25acb3d48830 19,99-102,108-109,120,135,141,153-158,198-200,221,525-528,696-699,743-748,751-764
+schema/README.md
+  s_b6781fcff0f6f2::t_15af619c421828 5-6,19,35,53-54,66-88
+schema/v1/discover.jsonl
+  s_b6781fcff0f6f2::t_ca3264e37f7719 1-2
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "5c23f5b1fbb9291c68d34e7ec5094e2262cff619",
+  "prompts": {},
+  "sessions": {
+    "s_b6781fcff0f6f2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "405eeffc-5bdc-429f-a0c3-9c439382367d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Glenn Sonna <3216616+theGlenn@users.noreply.github.com>"
+    },
+    "s_d4f694a6efe210": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "01a1845d-a231-7ac2-8894-b19fdd463785",
+        "model": "unknown"
+      },
+      "human_author": "Glenn Sonna <3216616+theGlenn@users.noreply.github.com>"
+    }
+  }
+}
