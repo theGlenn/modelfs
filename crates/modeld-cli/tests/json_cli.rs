@@ -597,6 +597,37 @@ fn discover_suggests_an_unwatched_folder_and_changes_nothing() {
     assert_eq!(home.generation(), None);
 }
 
+#[test]
+fn discover_json_suggests_a_pattern_that_watch_adds() {
+    let home = Home::new();
+    for game in ["alpha", "beta"] {
+        let project = home.dir.path().join("games").join(game);
+        std::fs::create_dir_all(project.join(".git")).expect("create project");
+        std::fs::create_dir_all(project.join("Assets")).expect("create folder");
+        std::fs::write(project.join("Assets/npc.gguf"), WEIGHTS).expect("write model");
+    }
+
+    let (lines, status) = home.json(&["discover", "--min-size", "1", "--json"]);
+
+    assert!(status.success());
+    let result = &last_line(&lines)["result"];
+    let suggestion = &result["suggestions"][0];
+    assert_eq!(suggestion["pattern"], "~/games/*/Assets", "{result}");
+    assert_eq!(suggestion["folders"].as_array().map(Vec::len), Some(2));
+    assert_eq!(suggestion["files"][1]["likely_copy"], true);
+    assert_eq!(result["min_size"], 1);
+
+    let (lines, status) = home.json(&["watch", "--pattern", "~/games/*/Assets", "--json"]);
+
+    assert!(status.success());
+    assert_eq!(last_line(&lines)["result"]["path"], "~/games/*/Assets");
+    let (lines, _) = home.json(&["discover", "--min-size", "1", "--json"]);
+    assert_eq!(
+        last_line(&lines)["result"]["suggestions"],
+        serde_json::json!([])
+    );
+}
+
 /// Asserts `path` is inside the temp home, so no test touches a real store.
 #[test]
 fn tests_never_touch_the_real_store() {

@@ -1,19 +1,36 @@
 //! Suggests folders to watch: large model files no scan root covers.
 //!
 //! Read-only: discovery changes no configuration and no model files, and it
-//! takes no store lock. See `modeld_providers::discover` for the walk.
+//! takes no store lock. See `modeld_providers::discover` for the walk. The
+//! first SIGINT or SIGTERM stops the walk; the command then fails with
+//! `cancelled`.
 
+use crate::Output;
+use crate::json::{self, ErrorCode, Event, EventWriter};
 use crate::report::human_bytes;
 use modeld_providers::discover::{Candidate, Discovery, Suggestion};
 use modeld_store::Store;
 use std::fmt::Write;
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 /// Files listed under each suggestion; the rest are counted.
 const LISTED_FILES: usize = 5;
 
-pub fn run(min_size: u64) {
+/// How often `--json` reports the folder count.
+const PROGRESS_INTERVAL: Duration = Duration::from_millis(250);
+
+pub fn run(min_size: u64, output: Output) {
+    let stop = match crate::daemon::stop_flag() {
+        Ok(stop) => stop,
+        Err(error) => crate::fail(
+            output,
+            ErrorCode::DiscoverFailed,
+            format!("cannot handle stop signals: {error}"),
+        ),
+    };
     let home = crate::home_dir();
     let home = home.canonicalize().unwrap_or(home);
     let detection = modeld_providers::detect_all();
@@ -25,15 +42,52 @@ pub fn run(min_size: u64) {
         );
     }
     let stored_models = stored_models(&crate::modeld_home());
-    eprintln!(
-        "Looking through {} for model files of {} or more…",
-        tilde(&home, &home),
-        human_bytes(min_size)
-    );
+    if output == Output::Text {
+        eprintln!(
+            "Looking through {} for model files of {} or more…",
+            tilde(&home, &home),
+            human_bytes(min_size)
+        );
+    }
+    let events = (output == Output::Json).then(EventWriter::start);
+    // A first event at once: callers may only signal after the first line.
+    if let Some(events) = &events {
+        events.send(Event::Discovering { folders: 0 });
+    }
     let started = Instant::now();
-    let discovery =
-        modeld_providers::discover::discover(&home, &detection, &stored_models, min_size);
-    print!("{}", render(&discovery, &home, min_size, started.elapsed()));
+    let mut reported = started;
+    let discovery = modeld_providers::discover::discover(
+        &home,
+        &detection,
+        &stored_models,
+        min_size,
+        |folders| {
+            if stop.load(Ordering::Relaxed) {
+                return ControlFlow::Break(());
+            }
+            if let Some(events) = &events
+                && reported.elapsed() >= PROGRESS_INTERVAL
+            {
+                reported = Instant::now();
+                events.send(Event::Discovering { folders });
+            }
+            ControlFlow::Continue(())
+        },
+    );
+    if let Some(events) = events {
+        events.finish();
+    }
+    match discovery {
+        Some(discovery) if output == Output::Json => {
+            json::emit_result(json::Discover::new(&discovery, min_size));
+        }
+        Some(discovery) => print!("{}", render(&discovery, &home, min_size, started.elapsed())),
+        None => crate::fail(
+            output,
+            ErrorCode::Cancelled,
+            "stopped before discovery finished",
+        ),
+    }
 }
 
 /// The store's blob files, to flag copies of them. Never creates a store.

@@ -133,6 +133,9 @@ The Models view opens in **Grouped** mode: expand a model to see its variants,
 or choose **Flat** for the original table. Duplicates appear as cards with each
 copy's location. **Background service** separates detected **Apps** from
 expandable watched **Folders**; **Add folder…** is also in the main toolbar.
+**Suggested folders → Find folders** runs `modeld discover` and lists folders
+worth watching with what each could free; **Watch** adds one, as a pattern
+when it covers several projects.
 
 Update by replacing the app from a new DMG, or run
 `brew upgrade --cask theGlenn/tap/modelfs`. If the background service needs an
@@ -154,7 +157,7 @@ Use `modeld <command> --help` for options.
 | `sync` | Imports models into `~/.modeld` and indexes their metadata | store only |
 | `ls` | Lists stored models, their format, quantization, size, and which apps use them | no |
 | `where <query>` | Finds paths for matching models | no |
-| `watch <folder>` | Adds a folder and its subfolders to the scan configuration | config only |
+| `watch <folder>` / `--pattern <glob>` | Adds a folder and its subfolders, or a glob pattern of folders, to the scan configuration | config only |
 | `dedupe [--dry-run]` | Replaces duplicates with APFS clones | yes, undoable |
 | `restore` | Rebuilds independent copies | yes |
 | `gc [--dry-run]` | Deletes unused stored copies | store only |
@@ -167,7 +170,7 @@ Use `modeld <command> --help` for options.
 default, and `discover` looks for files of at least 100 MB. Use
 `--min-size <bytes>` to change this.
 
-`doctor`, `ls`, `watch`, `pass`, `rm`, and the `daemon` subcommands accept `--json`
+`doctor`, `discover`, `ls`, `watch`, `pass`, `rm`, and the `daemon` subcommands accept `--json`
 for machine-readable output (JSON Lines). See [`schema/`](schema/README.md).
 
 ## Removing a model

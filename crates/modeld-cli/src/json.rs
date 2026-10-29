@@ -3,7 +3,7 @@
 //! Every line is one JSON object with a `type` and the [`SCHEMA_VERSION`]:
 //!
 //! - `{"type":"event","schema":1,"event":{"kind":"hashing",...}}` reports
-//!   progress while a command runs (only `pass` emits events);
+//!   progress while a command runs (`pass`, `rm`, and `discover`);
 //! - `{"type":"result","schema":1,"result":{...}}` is the command's outcome,
 //!   always the last line of a successful run (exit code 0);
 //! - `{"type":"error","schema":1,"error":{"code":"...","message":"..."}}`
@@ -172,6 +172,8 @@ pub enum ErrorCode {
     RemoveFailed,
     /// A watched folder could not be added.
     WatchFailed,
+    /// Discovery could not start.
+    DiscoverFailed,
 }
 
 /// The payload of an error line.
@@ -182,7 +184,7 @@ pub struct Failure {
     pub message: String,
 }
 
-/// Progress of a pass.
+/// Progress of a pass, a removal, or a discovery.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Event {
@@ -201,6 +203,10 @@ pub enum Event {
     /// `rm`: a step is about to run on this path.
     Removing {
         path: String,
+    },
+    /// `discover`: how many folders it has looked through so far.
+    Discovering {
+        folders: usize,
     },
 }
 
@@ -239,14 +245,95 @@ pub struct Root {
     pub excluded: Vec<String>,
 }
 
-/// `watch`: a folder saved in the scan configuration.
+/// `watch`: a folder or pattern saved in the scan configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Watch {
-    /// Canonical absolute path of the watched folder.
+    /// Canonical absolute path of the watched folder, or the pattern as saved.
     pub path: String,
     /// False when the folder was already configured.
     pub added: bool,
     pub config: String,
+}
+
+/// `discover`: folders no scan covers that hold large model files.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Discover {
+    /// Most bytes to free first, then largest.
+    pub suggestions: Vec<FolderSuggestion>,
+    /// Files directly in the home folder or a project root: too broad to watch.
+    pub loose: Vec<DiscoveredFile>,
+    /// The smallest file size considered, in bytes.
+    pub min_size: u64,
+    pub folders_read: usize,
+    /// Entries that could not be listed or inspected.
+    pub unreadable: usize,
+    /// Files and folders left alone because they are stored only in the cloud.
+    pub cloud_only: usize,
+}
+
+/// One folder, or one glob pattern over sibling projects, worth watching.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FolderSuggestion {
+    /// The glob pattern to add with `watch --pattern`; `null` to add the one
+    /// folder in `folders` with `watch`.
+    pub pattern: Option<String>,
+    /// The folders holding `files`.
+    pub folders: Vec<String>,
+    pub size: u64,
+    /// Bytes watching it would probably free.
+    pub reclaimable: u64,
+    /// Largest first.
+    pub files: Vec<DiscoveredFile>,
+}
+
+/// A large model file no scan covers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiscoveredFile {
+    pub path: String,
+    pub size: u64,
+    /// Same size and sampled bytes as a stored model or another file found.
+    pub likely_copy: bool,
+    /// Bytes no other file shares: what deduplicating it would free. Zero
+    /// for a copy that is already a clone.
+    pub reclaimable: u64,
+}
+
+impl Discover {
+    pub fn new(discovery: &modeld_providers::discover::Discovery, min_size: u64) -> Self {
+        Self {
+            suggestions: discovery
+                .suggestions
+                .iter()
+                .map(|suggestion| FolderSuggestion {
+                    pattern: suggestion.pattern.clone(),
+                    folders: suggestion
+                        .folders
+                        .iter()
+                        .map(|folder| text(folder))
+                        .collect(),
+                    size: suggestion.size(),
+                    reclaimable: suggestion.reclaimable(),
+                    files: suggestion.files.iter().map(DiscoveredFile::from).collect(),
+                })
+                .collect(),
+            loose: discovery.loose.iter().map(DiscoveredFile::from).collect(),
+            min_size,
+            folders_read: discovery.folders_read,
+            unreadable: discovery.unreadable,
+            cloud_only: discovery.cloud_only,
+        }
+    }
+}
+
+impl From<&modeld_providers::discover::Candidate> for DiscoveredFile {
+    fn from(file: &modeld_providers::discover::Candidate) -> Self {
+        Self {
+            path: text(&file.path),
+            size: file.size,
+            likely_copy: file.likely_copy,
+            reclaimable: file.reclaimable,
+        }
+    }
 }
 
 /// A path paired with why it was left out.
@@ -1135,6 +1222,80 @@ mod tests {
         assert_fixture("pass.jsonl", &rendered);
         for line in rendered.lines() {
             assert_round_trips::<Pass>(line);
+        }
+    }
+
+    #[test]
+    fn discover_fixture_matches_the_format() {
+        let games = format!("{HOME}/games");
+        let file = |path: String, likely_copy: bool, reclaimable: u64| DiscoveredFile {
+            path,
+            size: 3_427_863_872,
+            likely_copy,
+            reclaimable,
+        };
+        let discover = Discover {
+            suggestions: vec![
+                FolderSuggestion {
+                    pattern: Some("~/games/*/Assets".to_string()),
+                    folders: vec![
+                        format!("{games}/orc/Assets/StreamingAssets"),
+                        format!("{games}/tavern/Assets"),
+                    ],
+                    size: 3 * 3_427_863_872,
+                    reclaimable: 3_427_863_872,
+                    files: vec![
+                        file(
+                            format!("{games}/orc/Assets/StreamingAssets/npc.gguf"),
+                            false,
+                            0,
+                        ),
+                        file(
+                            format!("{games}/tavern/Assets/npc.gguf"),
+                            true,
+                            3_427_863_872,
+                        ),
+                        file(format!("{games}/tavern/Assets/npc-clone.gguf"), true, 0),
+                    ],
+                },
+                FolderSuggestion {
+                    pattern: None,
+                    folders: vec![format!("{HOME}/models/whisper")],
+                    size: 262_300_000,
+                    reclaimable: 0,
+                    files: vec![DiscoveredFile {
+                        path: format!("{HOME}/models/whisper/ggml-large-v3-turbo.bin"),
+                        size: 262_300_000,
+                        likely_copy: false,
+                        reclaimable: 0,
+                    }],
+                },
+            ],
+            loose: vec![DiscoveredFile {
+                path: format!("{HOME}/stray.gguf"),
+                size: 120_000_000,
+                likely_copy: false,
+                reclaimable: 0,
+            }],
+            min_size: 100_000_000,
+            folders_read: 629_226,
+            unreadable: 3,
+            cloud_only: 0,
+        };
+        let lines = [
+            serde_json::to_string(&Line::<()>::Event {
+                schema: SCHEMA_VERSION,
+                event: Event::Discovering { folders: 4096 },
+            }),
+            serde_json::to_string(&result(discover)),
+        ];
+        let rendered: String = lines
+            .into_iter()
+            .map(|line| line.expect("serialize") + "\n")
+            .collect();
+        assert_fixture("discover.jsonl", &rendered);
+        for line in rendered.lines() {
+            assert_round_trips::<Discover>(line);
         }
     }
 

@@ -160,8 +160,9 @@ always the user's choice, because the daemon then replaces copies in it.
   (`~/games/*/Assets`), so projects created later are covered. Names are
   escaped, and projects directly in the home folder are not merged: `~/*/Assets`
   would match far more than those projects.
-- **Text only.** No app runs `discover` yet, so it has no JSON output (see
-  [Machine-readable output](#machine-readable-output)).
+- **Suggestions are added as they are shown.** A pattern suggestion is saved
+  with `watch --pattern`, exactly as suggested, so the configuration says what
+  the user agreed to rather than the folders it matched that day.
 
 ## The store
 
@@ -450,8 +451,8 @@ and keeps running.
   changing one bumps it. [`schema/README.md`](schema/README.md) has the rules,
   and `schema/v1/` has example output that the Rust tests compare against and
   the app's tests decode.
-- **Only what the app runs.** `doctor`, `ls`, `watch`, `pass`, `rm`, and `daemon
-  install`, `uninstall`, and `status` have JSON output. Other commands
+- **Only what the app runs.** `doctor`, `discover`, `ls`, `watch`, `pass`, `rm`,
+  and `daemon install`, `uninstall`, and `status` have JSON output. Other commands
   refuse `--json`. Text output is unchanged.
 - **A reader that quits never stops a pass.** With `--json` (and for every
   `pass`), `SIGPIPE` stays ignored and write errors are dropped, as in the
@@ -488,6 +489,10 @@ view summary, never a removal target. Duplicates use one card per digest.
 Background service lists known apps separately from expandable watched folders.
 The folder picker runs `modeld watch`: it only updates configuration, then
 offers an explicit scan. Adding a folder never starts deduplication itself.
+**Suggested folders** runs `modeld discover` on request, never on its own: the
+walk takes minutes and reads the whole home folder. It is not a change, so it
+runs beside a pass or a folder addition, and Stop sends its one SIGINT.
+Watching a suggestion goes through the same `watch` path as the picker.
 
 - **The engine is bundled and run as a subprocess.** `scripts/build-app.sh`
   puts the `modeld` it builds at `ModelFS.app/Contents/MacOS/modeld`, so the

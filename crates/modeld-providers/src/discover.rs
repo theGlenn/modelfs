@@ -16,6 +16,7 @@ use crate::{Detection, scan};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::OsString;
 use std::io::{Read, Seek, SeekFrom};
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 
 /// Smallest file discovery reports: below this, a folder is rarely worth adding.
@@ -95,13 +96,17 @@ pub struct Discovery {
 
 /// Walks `home` for model files of at least `min_size` bytes that no root in
 /// `detection` covers. `stored_models` are the store's blob files.
-#[must_use]
+///
+/// `progress` hears the number of folders read so far after each folder;
+/// returning [`ControlFlow::Break`] stops the walk, and `discover` returns
+/// `None`.
 pub fn discover(
     home: &Path,
     detection: &Detection,
     stored_models: &[PathBuf],
     min_size: u64,
-) -> Discovery {
+    progress: impl FnMut(usize) -> ControlFlow<()>,
+) -> Option<Discovery> {
     let home = home.canonicalize().unwrap_or_else(|_| home.to_path_buf());
     let skipped: HashSet<PathBuf> = detection
         .roots
@@ -112,7 +117,7 @@ pub fn discover(
         .map(|path| crate::canonical_prefix(&path))
         .chain(SKIPPED_IN_HOME.iter().map(|name| home.join(name)))
         .collect();
-    let mut walk = walk(&home, &skipped, min_size);
+    let mut walk = walk(&home, &skipped, min_size, progress)?;
     let candidates = mark_copies(std::mem::take(&mut walk.files), stored_models);
     let mut placed = Vec::new();
     let mut loose = Vec::new();
@@ -127,13 +132,13 @@ pub fn discover(
             .then(a.folders.cmp(&b.folders))
     });
     loose.sort_by(|a, b| a.path.cmp(&b.path));
-    Discovery {
+    Some(Discovery {
         suggestions,
         loose,
         folders_read: walk.folders_read,
         unreadable: walk.unreadable,
         cloud_only: walk.cloud_only,
-    }
+    })
 }
 
 #[derive(Debug, Default)]
@@ -145,7 +150,12 @@ struct Walk {
     cloud_only: usize,
 }
 
-fn walk(home: &Path, skipped: &HashSet<PathBuf>, min_size: u64) -> Walk {
+fn walk(
+    home: &Path,
+    skipped: &HashSet<PathBuf>,
+    min_size: u64,
+    mut progress: impl FnMut(usize) -> ControlFlow<()>,
+) -> Option<Walk> {
     let mut projects = HashSet::new();
     let mut cloud_only_folders = 0;
     let mut found = Walk::default();
@@ -185,6 +195,9 @@ fn walk(home: &Path, skipped: &HashSet<PathBuf>, min_size: u64) -> Walk {
         };
         if entry.file_type().is_dir() {
             found.folders_read += 1;
+            if progress(found.folders_read).is_break() {
+                return None;
+            }
             continue;
         }
         if !entry.file_type().is_file() {
@@ -205,7 +218,7 @@ fn walk(home: &Path, skipped: &HashSet<PathBuf>, min_size: u64) -> Walk {
     }
     found.projects = projects;
     found.cloud_only += cloud_only_folders;
-    found
+    Some(found)
 }
 
 /// Whether a scan would record `path` as a model.
@@ -509,7 +522,10 @@ mod tests {
         }
 
         fn discover(&self, detection: &Detection) -> Discovery {
-            discover(self.dir.path(), detection, &[], 1)
+            discover(self.dir.path(), detection, &[], 1, |_| {
+                ControlFlow::Continue(())
+            })
+            .expect("not stopped")
         }
     }
 
@@ -677,7 +693,10 @@ mod tests {
         weights(&home.path.join("pair/b.gguf"), 4);
         modeld_core::apfs::clone_file(&original, &home.path.join("pair/c.gguf")).expect("clone");
 
-        let discovery = discover(home.dir.path(), &Detection::default(), &[stored], 1);
+        let discovery = discover(home.dir.path(), &Detection::default(), &[stored], 1, |_| {
+            ControlFlow::Continue(())
+        })
+        .expect("not stopped");
 
         let summary: Vec<_> = discovery
             .suggestions
@@ -721,9 +740,27 @@ mod tests {
         let home = Home::new();
         home.model("models/small.gguf");
 
-        let discovery = discover(home.dir.path(), &Detection::default(), &[], 1000);
+        let mut heard = Vec::new();
+        let discovery = discover(home.dir.path(), &Detection::default(), &[], 1000, |read| {
+            heard.push(read);
+            ControlFlow::Continue(())
+        })
+        .expect("not stopped");
 
         assert!(discovery.suggestions.is_empty());
-        assert!(discovery.folders_read >= 2);
+        assert_eq!(heard, [1, 2]);
+        assert_eq!(discovery.folders_read, 2);
+    }
+
+    #[test]
+    fn progress_can_stop_the_walk() {
+        let home = Home::new();
+        home.model("models/a.gguf");
+
+        let stopped = discover(home.dir.path(), &Detection::default(), &[], 1, |_| {
+            ControlFlow::Break(())
+        });
+
+        assert!(stopped.is_none());
     }
 }
