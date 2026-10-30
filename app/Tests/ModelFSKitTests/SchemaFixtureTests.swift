@@ -10,7 +10,7 @@ import Testing
         #expect(
             names == [
                 "daemon-install.json", "daemon-status.json", "daemon-uninstall.json",
-                "doctor.json", "error.json", "ls.json", "pass.jsonl",
+                "discover.jsonl", "doctor.json", "error.json", "ls.json", "pass.jsonl",
                 "rm-plan.json", "rm-removed.json", "watch.json",
             ]
         )
@@ -104,6 +104,32 @@ import Testing
         #expect(events.dropFirst().first == .locked)
         #expect(report?.cloned.count == 1)
         #expect(report?.deferred.first?.settlesInSecs == 289)
+    }
+
+    @Test func discoverLinesAreProgressThenSuggestions() throws {
+        let lines = String(decoding: try fixture("discover.jsonl"), as: UTF8.self)
+            .split(separator: "\n")
+            .map { Data($0.utf8) }
+
+        let messages = try lines.map { try decodeLine($0, as: DiscoveryReport.self) }
+
+        guard case .event(.discovering(let folders)) = messages.first,
+              case .result(let report) = messages.last
+        else {
+            Issue.record("expected progress then a result, got \(messages)")
+            return
+        }
+        #expect(folders == 4096)
+        let pattern = try #require(report.suggestions.first)
+        #expect(pattern.target == .pattern("~/games/*/Assets"))
+        #expect(pattern.folders.count == 2)
+        #expect(pattern.files.map(\.likelyCopy) == [false, true, true])
+        #expect(pattern.files.map(\.reclaimable) == [0, 3_427_863_872, 0])
+        let folder = try #require(report.suggestions.last)
+        #expect(folder.target == .folder(URL(fileURLWithPath: "/Users/me/models/whisper")))
+        #expect(report.loose.count == 1)
+        #expect(report.minSize == 100_000_000)
+        #expect(report.foldersRead == 629_226)
     }
 
     @Test func errorLineCarriesItsCode() throws {

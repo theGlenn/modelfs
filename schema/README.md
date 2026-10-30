@@ -2,8 +2,8 @@
 
 `modeld --json` writes [JSON Lines](https://jsonlines.org) to stdout: one
 JSON object per line. The Mac app reads it; scripts can too. The commands with
-JSON output are `doctor`, `ls`, `watch`, `pass`, `rm`, and `daemon install`,
-`uninstall`, and `status`. Any other command given `--json` fails with the
+JSON output are `doctor`, `discover`, `ls`, `watch`, `pass`, `rm`, and `daemon
+install`, `uninstall`, and `status`. Any other command given `--json` fails with the
 error code `unsupported`.
 
 Each file in [`v1/`](v1/) is an example of one command's output. The Rust
@@ -16,7 +16,7 @@ Every line has a `type` and the `schema` version:
 
 | `type` | Payload key | Meaning |
 |---|---|---|
-| `event` | `event` | Progress while the command runs. Only `pass` and `rm` emit events. |
+| `event` | `event` | Progress while the command runs. Only `pass`, `rm`, and `discover` emit events. |
 | `result` | `result` | The command's outcome. Always the last line of a run that succeeded. |
 | `error` | `error` | Why the command failed: a `code` to branch on and a human `message`. |
 
@@ -32,6 +32,7 @@ result line in more cases; see [Removing](#removing).
 | `hashing` | `path`, `size` | A file is being hashed. |
 | `cloning` | `path`, `size` | A duplicate is being replaced with a clone. |
 | `removing` | `path` | `rm` only: a step is about to run on this path. |
+| `discovering` | `folders` | `discover` only: folders looked through so far. |
 
 A caller may stop a pass with one SIGINT only before `locked`; the pass then
 ends with the error code `cancelled` and changes nothing. After `locked`, the
@@ -49,7 +50,8 @@ wait in a bounded queue and are dropped when it is full. The `result` or
 `store_unavailable`, `registry_unreadable`, `pass_failed`, `cancelled`,
 `install_failed`, `uninstall_failed`, `unsupported`,
 `confirmation_required` (`rm --json` without `--expect-plan` or `--yes`),
-`remove_failed`, `watch_failed`.
+`remove_failed`, `watch_failed`, `discover_failed` (`discover` could not
+install its signal handlers).
 
 ## Watching a folder
 
@@ -60,6 +62,29 @@ preserves comments and other settings, writes atomically under the store lock,
 and does not scan or change model files. The running daemon detects the config
 change and reloads its roots. Invalid folders, unreadable or invalid configs,
 and a busy store produce `watch_failed` with a recovery message.
+
+`watch --pattern <glob> --json` saves a glob pattern instead, exactly as given,
+such as `~/games/*/Assets`. The pattern must start with `~/` or `/`, be a valid
+glob, match at least one folder now, and match nothing inside the store. Its
+result has the same fields; `path` is the pattern, and `added` is `false` when
+the same pattern is already configured.
+
+## Finding folders to watch
+
+`discover --json` looks through the home folder for model files no scan covers
+and changes nothing. It takes no store lock and can take minutes. It writes a
+`discovering` event at once and then about four times a second, and a result
+with:
+
+| Field | Meaning |
+|---|---|
+| `suggestions` | Folders to watch, most bytes to free first. Each has a `pattern` (a glob for `watch --pattern`, or `null` to `watch` the one folder in `folders`), `folders`, `size`, `reclaimable` (bytes watching it would probably free), and `files`. |
+| `files`, `loose` | Each file has `path`, `size`, `likely_copy` (same size and sampled bytes as a stored model or another file found), and `reclaimable` (its bytes no other file shares; `0` for a copy that is already a clone). `loose` files sit directly in the home folder or a project root, too broad to suggest. |
+| `min_size` | The smallest file size considered. |
+| `folders_read`, `unreadable`, `cloud_only` | How many folders it read, entries it could not, and cloud-only items it left alone. |
+
+One SIGINT, sent after the first line, stops it with the error code
+`cancelled`.
 
 ## Removing
 

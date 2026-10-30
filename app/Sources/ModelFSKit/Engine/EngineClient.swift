@@ -20,7 +20,27 @@ public struct EngineClient: Sendable {
 
     /// Adds a folder to the persistent scan configuration; model files do not change.
     public func watchFolder(_ folder: URL) async throws(EngineError) -> WatchResult {
-        try await run(["watch", folder.path])
+        try await watch(.folder(folder))
+    }
+
+    /// Adds a folder or pattern to the persistent scan configuration.
+    public func watch(_ target: WatchTarget) async throws(EngineError) -> WatchResult {
+        try await run(target.arguments)
+    }
+
+    /// Looks through the home folder for large model files no scan covers.
+    ///
+    /// Changes nothing and takes minutes on a large home folder. `onProgress`
+    /// hears how many folders it has read so far. Cancelling the calling task
+    /// stops it; the call then fails with the `cancelled` code.
+    public func discover(
+        onProgress: @escaping @Sendable (Int) -> Void
+    ) async throws(EngineError) -> DiscoveryReport {
+        try await EngineProcess.run(invocation(["discover"]), interruptible: true) { event in
+            if case .discovering(let folders) = event {
+                onProgress(folders)
+            }
+        }
     }
 
     /// Every stored model and where its copies stand.

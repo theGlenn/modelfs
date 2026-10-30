@@ -71,7 +71,7 @@ struct MainWindow: View {
                         Image(systemName: "checkmark.circle.fill")
                             .foregroundStyle(.green)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("\(fileName(watched.path)) is \(watched.added ? "now watched" : "already watched").")
+                            Text("\(watched.isPattern ? watched.path : fileName(watched.path)) is \(watched.added ? "now watched" : "already watched").")
                             Text(model.daemon?.isInstalled == true
                                  ? "Scan now to find its models, or let the background service pick them up."
                                  : "Scan now to find its models.")

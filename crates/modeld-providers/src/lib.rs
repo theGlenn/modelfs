@@ -7,6 +7,7 @@ use scan::{ScanOutcome, Skipped};
 use std::path::{Path, PathBuf};
 
 pub mod config;
+pub mod discover;
 pub mod huggingface;
 pub mod lmstudio;
 pub mod ollama;
@@ -81,13 +82,17 @@ fn detect_in(home: &Path) -> Detection {
             untrackable: false,
         }),
     }
-    let protected: Vec<_> = huggingface::excluded(&home)
-        .into_iter()
-        .chain(lmstudio::excluded(&home))
-        .chain(xybrid::excluded(&home))
-        .collect();
-    protect_manual_roots(&mut detection.roots, &protected);
+    protect_manual_roots(&mut detection.roots, &protected_paths(&home));
     detection
+}
+
+/// App subtrees that are never model storage, whichever folder a scan starts from.
+fn protected_paths(home: &Path) -> Vec<PathBuf> {
+    huggingface::excluded(home)
+        .into_iter()
+        .chain(lmstudio::excluded(home))
+        .chain(xybrid::excluded(home))
+        .collect()
 }
 
 /// A broad configured folder must not re-enter an app's protected subtrees.
@@ -118,7 +123,7 @@ fn protect_manual_roots(roots: &mut [ProviderRoot], extra: &[PathBuf]) {
     }
 }
 
-fn canonical_prefix(path: &Path) -> PathBuf {
+pub(crate) fn canonical_prefix(path: &Path) -> PathBuf {
     for ancestor in path.ancestors() {
         if let Ok(canonical) = ancestor.canonicalize() {
             return canonical.join(path.strip_prefix(ancestor).unwrap_or(path));

@@ -29,6 +29,13 @@ struct FakeEngine {
             fi
             exit 0 ;;
           daemon) tr -d '\n' < "$fixtures/daemon-status.json"; echo; exit 0 ;;
+          discover)
+            if test "$FAKE_MODE" = "discover-wait"; then
+              trap 'echo interrupted >> "$FAKE_LOG"; echo "{\"type\":\"error\",\"schema\":1,\"error\":{\"code\":\"cancelled\",\"message\":\"stopped\"}}"; exit 1' INT
+              echo '{"type":"event","schema":1,"event":{"kind":"discovering","folders":7}}'
+              while true; do sleep 0.02; done
+            fi
+            cat "$fixtures/discover.jsonl"; exit 0 ;;
           watch)
             if test "$FAKE_MODE" = "watch-error"; then
               echo '{"type":"error","schema":1,"error":{"code":"watch_failed","message":"folder cannot be read"}}'
