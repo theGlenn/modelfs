@@ -71,6 +71,8 @@ struct BackgroundServiceView: View {
                 Text("Folders")
             }
 
+            SuggestedFoldersSection()
+
             ForEach(folderRoots) { root in
                 SwiftUI.Section {
                     WatchedFolderCard(root: root, indexedFiles: indexedFiles(in: root.path))

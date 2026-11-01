@@ -10,6 +10,7 @@ use std::time::Duration;
 
 mod consolidation;
 mod daemon;
+mod discover;
 mod events;
 mod generation;
 mod inventory;
@@ -29,7 +30,7 @@ mod watch;
 #[derive(Parser)]
 #[command(name = "modeld", version, about = "Local model storage layer")]
 struct Cli {
-    /// Write JSON Lines instead of text (doctor, ls, watch, pass, rm, daemon install/uninstall/status)
+    /// Write JSON Lines instead of text (doctor, discover, ls, watch, pass, rm, daemon install/uninstall/status)
     #[arg(long, global = true)]
     json: bool,
     #[command(subcommand)]
@@ -47,11 +48,25 @@ enum Output {
 enum Command {
     /// Report detected providers and their scan roots
     Doctor,
-    /// Add a folder to scan and watch for models
+    /// Add a folder, or a glob pattern of folders, to scan and watch for models
+    #[command(group(
+        clap::ArgGroup::new("target")
+            .required(true)
+            .args(["folder", "pattern"])
+    ))]
     Watch {
         /// Existing folder to add (the background service picks it up automatically)
         #[arg(value_name = "FOLDER")]
-        folder: PathBuf,
+        folder: Option<PathBuf>,
+        /// Glob pattern to add instead, such as `~/games/*/Assets`; it must match a folder now
+        #[arg(long, value_name = "PATTERN")]
+        pattern: Option<String>,
+    },
+    /// Find folders with large model files that no scan covers; changes nothing
+    Discover {
+        /// Ignore files smaller than this many bytes
+        #[arg(long, default_value_t = modeld_providers::discover::DEFAULT_MIN_SIZE)]
+        min_size: u64,
     },
     /// Inventory local model artifacts and report exact duplicates
     Scan {
@@ -153,6 +168,7 @@ impl Command {
         matches!(
             self,
             Self::Doctor
+                | Self::Discover { .. }
                 | Self::Watch { .. }
                 | Self::Ls
                 | Self::Pass { .. }
@@ -186,7 +202,15 @@ fn main() {
     }
     match command {
         Command::Doctor => doctor(output),
-        Command::Watch { folder } => watch::run(&folder, output),
+        Command::Watch { folder, pattern } => {
+            let target = match (&folder, &pattern) {
+                (Some(folder), _) => watch::Target::Folder(folder),
+                (None, Some(pattern)) => watch::Target::Pattern(pattern),
+                (None, None) => unreachable!("clap requires a folder or a pattern"),
+            };
+            watch::run(&target, output);
+        }
+        Command::Discover { min_size } => discover::run(min_size, output),
         Command::Scan { min_size } => scan(min_size),
         Command::Sync { min_size } => {
             sync(min_size);

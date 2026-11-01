@@ -21,6 +21,9 @@ public final class AppModel {
     public private(set) var lastPassCancelled = false
     /// The last folder this app added, or found already watched.
     public private(set) var lastWatchedFolder: WatchResult?
+    /// Folders worth watching, from the last search. Searching changes
+    /// nothing, so it runs alongside passes and folder additions.
+    public private(set) var discovery: DiscoveryState = .idle
     /// Why the last change (pass, service) failed; kept until the next one.
     private var actionProblem: String?
     /// Why the last refresh could not read everything.
@@ -46,6 +49,7 @@ public final class AppModel {
     private var watcher: StoreWatcher?
     private var refresher: Refresher?
     private var mutation: Task<Void, Never>?
+    private var discoveryTask: Task<Void, Never>?
 
     public init(
         home: URL = FileManager.default.homeDirectoryForCurrentUser,
@@ -195,6 +199,18 @@ public final class AppModel {
 
     /// Watches a folder on future scans without importing or deduplicating its files.
     public func watchFolder(_ folder: URL) {
+        watch(.folder(folder))
+    }
+
+    /// Watches a suggested folder or pattern, then drops it from the suggestions.
+    public func watchSuggestion(_ suggestion: FolderSuggestion) {
+        let id = suggestion.id
+        watch(suggestion.target) { [weak self] in
+            self?.dropSuggestion(id)
+        }
+    }
+
+    private func watch(_ target: WatchTarget, onSuccess: @escaping @MainActor () -> Void = {}) {
         guard mutation == nil, let client else { return }
         guard refuseUnlessFoldersKnown() else { return }
         activity = .addingFolder
@@ -202,11 +218,12 @@ public final class AppModel {
         lastWatchedFolder = nil
         mutation = Task {
             let result = await Self.attempt { () async throws(EngineError) in
-                try await client.watchFolder(folder)
+                try await client.watch(target)
             }
             switch result {
             case .success(let watched):
                 lastWatchedFolder = watched
+                onSuccess()
             case .failure(let error):
                 actionProblem = error.localizedDescription
             }
@@ -229,6 +246,49 @@ public final class AppModel {
         changeService(.removingService) { client throws(EngineError) in
             _ = try await client.uninstallDaemon()
         }
+    }
+
+    // MARK: Discovering
+
+    /// Looks through the home folder for model folders no scan covers.
+    ///
+    /// Takes minutes on a large home folder and changes nothing.
+    public func discoverFolders() {
+        guard discoveryTask == nil, let client else { return }
+        discovery = .running(foldersRead: 0)
+        let (progress, report) = AsyncStream.makeStream(of: Int.self, bufferingPolicy: .bufferingNewest(1))
+        discoveryTask = Task {
+            let updates = Task { @MainActor in
+                for await folders in progress where self.discovery.isRunning {
+                    self.discovery = .running(foldersRead: folders)
+                }
+            }
+            let result = await Self.attempt { () async throws(EngineError) in
+                try await client.discover { report.yield($0) }
+            }
+            report.finish()
+            await updates.value
+            switch result {
+            case .success(let found):
+                discovery = .finished(found)
+            case .failure(.failed(let failure)) where failure.code == .cancelled:
+                discovery = .idle
+            case .failure(let error):
+                discovery = .failed(error.localizedDescription)
+            }
+            discoveryTask = nil
+        }
+    }
+
+    /// Stops a running search; nothing it found is kept.
+    public func cancelDiscovery() {
+        discoveryTask?.cancel()
+    }
+
+    private func dropSuggestion(_ id: FolderSuggestion.ID) {
+        guard case .finished(var report) = discovery else { return }
+        report.suggestions.removeAll { $0.id == id }
+        discovery = .finished(report)
     }
 
     /// Sets the problem and returns false while the folders are unknown.

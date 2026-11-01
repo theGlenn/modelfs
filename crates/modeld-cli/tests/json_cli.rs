@@ -570,6 +570,64 @@ fn text_pass_prints_the_daemon_summary() {
     );
 }
 
+#[test]
+fn discover_suggests_an_unwatched_folder_and_changes_nothing() {
+    let home = Home::new();
+    home.settled_model("watched.gguf");
+    let assets = home.dir.path().join("game/Assets");
+    std::fs::create_dir_all(&assets).expect("create folder");
+    std::fs::write(assets.join("npc.gguf"), WEIGHTS).expect("write model");
+    let config = std::fs::read_to_string(home.store().join("config.toml")).expect("config");
+
+    let output = home
+        .modeld(&["discover", "--min-size", "1"])
+        .output()
+        .expect("run modeld");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{stdout}");
+    assert!(stdout.contains("\n~/game/Assets\n"), "{stdout}");
+    assert!(stdout.contains("modeld watch ~/game/Assets"), "{stdout}");
+    assert!(!stdout.contains("watched.gguf"), "{stdout}");
+    assert_eq!(
+        std::fs::read_to_string(home.store().join("config.toml")).expect("config"),
+        config
+    );
+    assert!(!home.store().join("registry.db").exists());
+    assert_eq!(home.generation(), None);
+}
+
+#[test]
+fn discover_json_suggests_a_pattern_that_watch_adds() {
+    let home = Home::new();
+    for game in ["alpha", "beta"] {
+        let project = home.dir.path().join("games").join(game);
+        std::fs::create_dir_all(project.join(".git")).expect("create project");
+        std::fs::create_dir_all(project.join("Assets")).expect("create folder");
+        std::fs::write(project.join("Assets/npc.gguf"), WEIGHTS).expect("write model");
+    }
+
+    let (lines, status) = home.json(&["discover", "--min-size", "1", "--json"]);
+
+    assert!(status.success());
+    let result = &last_line(&lines)["result"];
+    let suggestion = &result["suggestions"][0];
+    assert_eq!(suggestion["pattern"], "~/games/*/Assets", "{result}");
+    assert_eq!(suggestion["folders"].as_array().map(Vec::len), Some(2));
+    assert_eq!(suggestion["files"][1]["likely_copy"], true);
+    assert_eq!(result["min_size"], 1);
+
+    let (lines, status) = home.json(&["watch", "--pattern", "~/games/*/Assets", "--json"]);
+
+    assert!(status.success());
+    assert_eq!(last_line(&lines)["result"]["path"], "~/games/*/Assets");
+    let (lines, _) = home.json(&["discover", "--min-size", "1", "--json"]);
+    assert_eq!(
+        last_line(&lines)["result"]["suggestions"],
+        serde_json::json!([])
+    );
+}
+
 /// Asserts `path` is inside the temp home, so no test touches a real store.
 #[test]
 fn tests_never_touch_the_real_store() {

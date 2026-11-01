@@ -48,7 +48,7 @@ public struct PassProgress: Sendable, Equatable {
         switch event {
         case .waitingForLock where canCancel:
             step = .waitingForLock
-        case .waitingForLock, .unknown, .removing:
+        case .waitingForLock, .unknown, .removing, .discovering:
             break
         case .locked:
             step = .running

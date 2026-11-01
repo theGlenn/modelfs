@@ -294,6 +294,6 @@ fn print_event(event: &Event) {
             crate::report::human_bytes(*size)
         ),
         Event::Removing { path } => writeln!(stderr, "removing {path}"),
-        Event::Locked | Event::Cloning { .. } => Ok(()),
+        Event::Locked | Event::Cloning { .. } | Event::Discovering { .. } => Ok(()),
     };
 }

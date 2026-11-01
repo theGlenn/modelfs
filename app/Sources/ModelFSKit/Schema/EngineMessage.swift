@@ -67,11 +67,12 @@ public struct EngineFailure: Decodable, Sendable, Equatable {
         case confirmationRequired = "confirmation_required"
         case removeFailed = "remove_failed"
         case watchFailed = "watch_failed"
+        case discoverFailed = "discover_failed"
         case unknown
     }
 }
 
-/// Progress of a pass.
+/// Progress of a pass, a removal, or a discovery.
 public enum PassEvent: Sendable, Equatable {
     /// Another modeld process, often the daemon, holds the store lock.
     case waitingForLock
@@ -81,13 +82,15 @@ public enum PassEvent: Sendable, Equatable {
     case cloning(path: String, size: UInt64)
     /// `rm`: a step is about to run on this path.
     case removing(path: String)
+    /// `discover`: how many folders it has looked through so far.
+    case discovering(folders: Int)
     /// An event kind a newer engine added.
     case unknown(kind: String)
 }
 
 extension PassEvent: Decodable {
     private enum CodingKeys: String, CodingKey {
-        case kind, path, size
+        case kind, path, size, folders
     }
 
     public init(from decoder: any Decoder) throws {
@@ -110,6 +113,8 @@ extension PassEvent: Decodable {
             )
         case "removing":
             self = .removing(path: try container.decode(String.self, forKey: .path))
+        case "discovering":
+            self = .discovering(folders: try container.decode(Int.self, forKey: .folders))
         default:
             self = .unknown(kind: kind)
         }

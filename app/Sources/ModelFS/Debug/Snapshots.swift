@@ -8,7 +8,8 @@ import SwiftUI
 /// Launch with `MODELFS_SNAPSHOT_DIR=<folder>`; once the store has been
 /// read, the app draws each screen with the live data into that folder and
 /// quits. Views draw themselves (`cacheDisplay`), so no Screen Recording
-/// permission is needed.
+/// permission is needed. With `MODELFS_SNAPSHOT_DISCOVER=1`, it first looks
+/// for suggested folders (minutes; changes nothing) and draws them too.
 @MainActor
 enum Snapshots {
     static func renderIfRequested(model: AppModel) async {
@@ -24,6 +25,14 @@ enum Snapshots {
             ("service", AnyView(MainWindow(section: .service)), CGSize(width: 1040, height: 760), .seconds(1.2)),
             ("popover", AnyView(StatusPopover()), CGSize(width: 330, height: 300), .seconds(1.2)),
         ]
+        if ProcessInfo.processInfo.environment["MODELFS_SNAPSHOT_DISCOVER"] == "1" {
+            model.discoverFolders()
+            while model.discovery.isRunning {
+                try? await Task.sleep(for: .milliseconds(200))
+            }
+            let suggestions = Form { SuggestedFoldersSection(expandsFirst: true) }.formStyle(.grouped)
+            screens.append(("suggestions", AnyView(suggestions), CGSize(width: 900, height: 900), .seconds(1.2)))
+        }
         if let selected {
             // Dry runs only: planning a removal changes nothing.
             screens.append(("remove", AnyView(RemoveSheet(target: selected)), CGSize(width: 580, height: 560), .seconds(6)))
