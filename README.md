@@ -129,6 +129,12 @@ and changes nothing that the CLI would not. Its first scan only adds models
 to the store; **Deduplicate now** runs one `modeld pass`; **Remove…** shows
 what `modeld rm` would do for each app, and runs exactly that plan.
 
+To clear out a family of models, search for it (say `kitten` or `qwen2.5`;
+search matches names, repos, tags, and paths), click **Select all**, then
+**Remove N models…**. Several models are removed from every app and the store
+as one plan; the sheet shows what it frees first, and the minus button leaves
+a model out.
+
 The Models view opens in **Grouped** mode: expand a model to see its variants,
 or choose **Flat** for the original table. Duplicates appear as cards with each
 copy's location. **Background service** separates detected **Apps** from

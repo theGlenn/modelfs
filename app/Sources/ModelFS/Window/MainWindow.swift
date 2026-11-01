@@ -31,10 +31,13 @@ struct MainWindow: View {
     @Environment(AppModel.self) private var model
     @State private var section: Section?
     private let selection: Model.ID?
+    private let search: String
 
-    init(section: Section = .models, selection: Model.ID? = nil) {
+    /// `search` opens Models searched and with every match selected, for review snapshots.
+    init(section: Section = .models, selection: Model.ID? = nil, search: String = "") {
         _section = State(initialValue: section)
         self.selection = selection
+        self.search = search
     }
 
     var body: some View {
@@ -124,7 +127,7 @@ struct MainWindow: View {
             ProgressView("Reading the store…")
         } else {
             switch section ?? .models {
-            case .models: ModelsView(selection: selection)
+            case .models: ModelsView(selection: selection, search: search, selectsAllMatches: !search.isEmpty)
             case .duplicates: DuplicatesView()
             case .service: BackgroundServiceView()
             }

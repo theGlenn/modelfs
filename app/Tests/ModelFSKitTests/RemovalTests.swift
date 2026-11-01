@@ -48,6 +48,45 @@ import Testing
         #expect(done.outcome?.completed == [0, 1, 2, 3])
     }
 
+    @Test func notesOfOneKindMergeIntoOneLine() throws {
+        guard case .result(let planned) = try decodeLine(try fixture("rm-plan.json"), as: RemovalResult.self) else {
+            Issue.record("expected a plan")
+            return
+        }
+        var plan = planned.plan
+        plan.notes = [
+            RemovalNote(code: .symlinks, path: "/m/a.gguf", message: "1 symlink points here", paths: ["/p/a"]),
+            RemovalNote(code: .gitRepository, path: "/r/c.gguf", message: "Inside the git repository /r", paths: ["/r"]),
+            RemovalNote(code: .symlinks, path: "/m/b.gguf", message: "1 symlink points here", paths: ["/p/b"]),
+        ]
+
+        let summaries = plan.noteSummaries
+
+        #expect(
+            summaries.map(\.text) == [
+                "2 files have symlinks pointing at them; those links will stop working.",
+                "Inside the git repository /r",
+            ]
+        )
+        #expect(summaries.first?.paths == ["/m/a.gguf", "/m/b.gguf", "/p/a", "/p/b"])
+    }
+
+    @Test func aRefusalConcernsTheModelWhoseCopyItNames() throws {
+        guard case .result(let inventory) = try decodeLine(try fixture("ls.json"), as: Inventory.self) else {
+            Issue.record("expected an inventory")
+            return
+        }
+        let qwen = try #require(inventory.models.first)
+        let minilm = try #require(inventory.models.last)
+        let path = try #require(qwen.references.first?.path)
+        let refusal = RemovalRefusal(code: .inUse, path: path, message: "open", processes: [])
+        let unknown = RemovalRefusal(code: .unknownModel, path: minilm.digest, message: "unknown", processes: [])
+
+        #expect(refusal.concerns(qwen))
+        #expect(!refusal.concerns(minilm))
+        #expect(unknown.concerns(minilm))
+    }
+
     @Test func aChangedPlanIsReturnedNotThrown() async throws {
         let engine = try FakeEngine()
 

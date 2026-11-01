@@ -9,7 +9,9 @@ import SwiftUI
 /// read, the app draws each screen with the live data into that folder and
 /// quits. Views draw themselves (`cacheDisplay`), so no Screen Recording
 /// permission is needed. With `MODELFS_SNAPSHOT_DISCOVER=1`, it first looks
-/// for suggested folders (minutes; changes nothing) and draws them too.
+/// for suggested folders (minutes; changes nothing) and draws them too. With
+/// `MODELFS_SNAPSHOT_SEARCH=<query>`, it draws Models searched for the query
+/// with every match selected, and the sheet removing them (dry runs only).
 @MainActor
 enum Snapshots {
     static func renderIfRequested(model: AppModel) async {
@@ -32,6 +34,14 @@ enum Snapshots {
             }
             let suggestions = Form { SuggestedFoldersSection(expandsFirst: true) }.formStyle(.grouped)
             screens.append(("suggestions", AnyView(suggestions), CGSize(width: 900, height: 900), .seconds(1.2)))
+        }
+        if let query = ProcessInfo.processInfo.environment["MODELFS_SNAPSHOT_SEARCH"], !query.isEmpty {
+            let matches = (model.inventory?.models ?? []).filter { $0.kind != .asset && $0.matches(query) }
+            screens.append(("models-search", AnyView(MainWindow(section: .models, search: query)), CGSize(width: 1280, height: 720), .seconds(1.2)))
+            if !matches.isEmpty {
+                // Dry runs only: planning a removal changes nothing.
+                screens.append(("remove-batch", AnyView(RemoveSheet(targets: matches)), CGSize(width: 580, height: 560), .seconds(8)))
+            }
         }
         if let selected {
             // Dry runs only: planning a removal changes nothing.

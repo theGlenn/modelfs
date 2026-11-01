@@ -39,19 +39,33 @@ private enum ModelLayout: String, CaseIterable, Identifiable {
     var title: String { self == .grouped ? "Grouped" : "Flat" }
 }
 
+/// Models a removal sheet was opened for.
+private struct RemovalBatch: Identifiable {
+    let id = UUID()
+    let models: [Model]
+}
+
 /// Every stored model, searchable, filterable, and sortable.
+///
+/// Several rows can be selected; a group row stands for every variant in
+/// it. Searching, then Select all, gathers a family of models (say, every
+/// Kitten model) for one removal.
 struct ModelsView: View {
     @Environment(AppModel.self) private var model
     @AppStorage("models.layout") private var layout = ModelLayout.grouped
-    @State private var search = ""
+    @State private var search: String
     @State private var filter = ModelFilter.all
     @State private var sortOrder = [KeyPathComparator(\ModelTableRow.size, order: .reverse)]
     @State private var expanded: Set<String> = []
-    @State private var selection: Model.ID?
-    @State private var removing: Model?
+    @State private var selection: Set<ModelTableRow.ID>
+    @State private var removing: RemovalBatch?
+    private let selectsAllMatches: Bool
 
-    init(selection: Model.ID? = nil) {
-        _selection = State(initialValue: selection)
+    /// `search` and `selectsAllMatches` open the view mid-task, for review snapshots.
+    init(selection: Model.ID? = nil, search: String = "", selectsAllMatches: Bool = false) {
+        _selection = State(initialValue: selection.map { [$0] } ?? [])
+        _search = State(initialValue: search)
+        self.selectsAllMatches = selectsAllMatches
     }
 
     var body: some View {
@@ -118,14 +132,22 @@ struct ModelsView: View {
                 }
             }
         }
-        .contextMenu(forSelectionType: Model.ID.self) { ids in
-            if let id = ids.first, let row = model.inventory?.models.first(where: { $0.id == id }) {
-                Button("Remove…", role: .destructive) { removing = row }
-                    .disabled(model.activity.isBusy)
+        .contextMenu(forSelectionType: ModelTableRow.ID.self) { ids in
+            let models = models(in: ids)
+            if !models.isEmpty {
+                Button(models.count == 1 ? "Remove…" : "Remove \(models.count) models…", role: .destructive) {
+                    removing = RemovalBatch(models: models)
+                }
+                .disabled(model.activity.isBusy)
             }
         }
-        .sheet(item: $removing) { row in
-            RemoveSheet(target: row)
+        .sheet(item: $removing) { batch in
+            RemoveSheet(targets: batch.models)
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if showsSelectionBar {
+                selectionBar
+            }
         }
         .searchable(text: $search, prompt: "Name, repo, tag, or path")
         .toolbar {
@@ -159,11 +181,93 @@ struct ModelsView: View {
                 ContentUnavailableView.search(text: search)
             }
         }
-        .onAppear { expandSelectedGroup() }
+        .onAppear {
+            expandSelectedGroup()
+            expandSearchResults()
+            if selectsAllMatches {
+                selectAllMatches()
+            }
+        }
         .onChange(of: layout) { expandSelectedGroup() }
         .onChange(of: search) { expandSearchResults() }
         .onChange(of: filter) { expandSearchResults() }
+        .onChange(of: model.inventory) { forgetRemovedSelection() }
         .navigationTitle("Models")
+    }
+
+    private var isSearching: Bool {
+        !search.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    private var showsSelectionBar: Bool {
+        isSearching || selectedModels.count > 1
+    }
+
+    /// While searching: how many match and Select all. With a selection:
+    /// what it holds and Remove.
+    private var selectionBar: some View {
+        let selected = selectedModels
+        let matches = matchingModels
+        return VStack(spacing: 0) {
+            Divider()
+            HStack(spacing: 12) {
+                if isSearching {
+                    Text("\(matches.count) \(matches.count == 1 ? "model matches" : "models match")")
+                        .foregroundStyle(.secondary)
+                    Button("Select all") { selectAllMatches() }
+                        .disabled(matches.isEmpty || Set(matches.map(\.id)) == Set(selected.map(\.id)))
+                }
+                Spacer()
+                if !selected.isEmpty {
+                    Text("\(selected.count) selected · \(selected.reduce(0) { $0 + $1.size }.bytes)")
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                    Button(selected.count == 1 ? "Remove…" : "Remove \(selected.count) models…", role: .destructive) {
+                        removing = RemovalBatch(models: selected)
+                    }
+                    .disabled(model.activity.isBusy)
+                    .help("Plan removing the selected models from every app and the store; nothing changes until you confirm.")
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            .background(.bar)
+        }
+    }
+
+    /// The models selected rows stand for, in table order, each once.
+    private var selectedModels: [Model] {
+        models(in: selection)
+    }
+
+    private func models(in ids: Set<ModelTableRow.ID>) -> [Model] {
+        var seen = Set<Model.ID>()
+        var models: [Model] = []
+        func add(_ model: Model) {
+            if seen.insert(model.id).inserted {
+                models.append(model)
+            }
+        }
+        for row in tableRows {
+            if ids.contains(row.id) {
+                row.model.map(add)
+                row.children?.compactMap(\.model).forEach(add)
+            } else {
+                row.children?.filter { ids.contains($0.id) }.compactMap(\.model).forEach(add)
+            }
+        }
+        return models
+    }
+
+    private func selectAllMatches() {
+        expandSearchResults()
+        selection = Set(matchingModels.map(\.id))
+    }
+
+    /// Drops removed models from the selection once the inventory refreshes.
+    private func forgetRemovedSelection() {
+        let known = Set((model.inventory?.models ?? []).map(\.id))
+        selection = selection.filter { $0.hasPrefix("group:") || known.contains($0) }
     }
 
     private var matchingModels: [Model] {
@@ -205,14 +309,16 @@ struct ModelsView: View {
     }
 
     private func expandSelectedGroup() {
-        guard let selection else { return }
-        if let group = ModelGroup.grouping(matchingModels).first(where: { $0.models.contains { $0.id == selection } }) {
+        for group in ModelGroup.grouping(matchingModels)
+        where group.models.contains(where: { selection.contains($0.id) }) {
             expanded.insert(group.id)
         }
     }
 
+    /// The one model the inspector shows: only when one variant row is selected.
     private var selected: Model? {
-        model.inventory?.models.first { $0.id == selection }
+        guard selection.count == 1, let id = selection.first else { return nil }
+        return model.inventory?.models.first { $0.id == id }
     }
 
     private var inspectorShown: Binding<Bool> {
@@ -220,7 +326,7 @@ struct ModelsView: View {
             get: { selected != nil },
             set: { shown in
                 if !shown {
-                    selection = nil
+                    selection = []
                 }
             }
         )

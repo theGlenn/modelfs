@@ -484,8 +484,10 @@ passes. It is a viewer and a remote control for the engine; every decision
 about files stays in `modeld`.
 
 Models default to a grouped table of named variants, with a persisted Flat
-option. Each leaf keeps its digest and per-model removal plan; a group is a
-view summary, never a removal target. Duplicates use one card per digest.
+option. Each leaf keeps its digest and per-model removal plan. A group is a
+view summary: selecting it selects its variants, and the Remove sheet lists
+each model by name, so a removal never targets a group name it cannot show.
+Duplicates use one card per digest.
 Background service lists known apps separately from expandable watched folders.
 The folder picker runs `modeld watch`: it only updates configuration, then
 offers an explicit scan. Adding a folder never starts deduplication itself.
@@ -520,6 +522,15 @@ Watching a suggestion goes through the same `watch` path as the picker.
   blocks it with a way to fix it, and notes. Confirming passes the plan's id
   (`--expect-plan`); if anything changed, nothing is removed and the sheet
   shows the new plan. A started removal cannot be cancelled.
+- **Removing many models is one plan.** Families rarely share metadata (Kitten
+  models span four naming styles and several architectures), so the app does
+  not guess them. Search gathers them instead, matching names, repos, tags,
+  and paths; Select all selects every match. Several selected models are
+  removed everywhere only, through one `modeld rm <digest>...` plan with one
+  id: one confirmation, one check that nothing changed. The sheet shows the
+  plan before the list, merges notes of one kind into a line (nine symlink
+  warnings read as one), and anything blocking one model offers to leave that
+  model out and plan again.
 - **One change at a time.** A pass, installing, or removing the service is
   owned by the app's model, not by a view, so closing the window never cuts
   one short. Quitting the app leaves a running engine to finish.
