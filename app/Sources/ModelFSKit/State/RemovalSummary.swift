@@ -96,3 +96,56 @@ extension RemovalRefusal {
         }
     }
 }
+
+/// Notes of one kind, merged so a plan for many models stays readable.
+public struct NoteSummary: Sendable, Equatable, Identifiable {
+    public var code: NoteCode
+    public var text: String
+    /// The paths the notes are about, then their related paths.
+    public var paths: [String]
+
+    public var id: String { code.rawValue }
+}
+
+extension RemovalPlan {
+    /// One line per kind of note, in the order kinds first appear. A kind
+    /// with one note keeps its own message.
+    public var noteSummaries: [NoteSummary] {
+        var order: [NoteCode] = []
+        var byCode: [NoteCode: [RemovalNote]] = [:]
+        for note in notes {
+            if byCode[note.code] == nil {
+                order.append(note.code)
+            }
+            byCode[note.code, default: []].append(note)
+        }
+        return order.map { code in
+            let notes = byCode[code] ?? []
+            let text = notes.count == 1
+                ? notes[0].message
+                : code.summary(count: notes.count) ?? "\(notes[0].message) (and \(notes.count - 1) more)"
+            return NoteSummary(code: code, text: text, paths: notes.map(\.path) + notes.flatMap(\.paths))
+        }
+    }
+}
+
+extension NoteCode {
+    /// What `count` notes of this kind say together.
+    func summary(count: Int) -> String? {
+        switch self {
+        case .lastApp: "\(count) models leave their last app, so their stored copies go too."
+        case .alreadyGone: "\(count) files are already gone; ModelFS only forgets them."
+        case .verifyByHashing: "\(count) files changed since they were hashed, so they are hashed again first."
+        case .gitRepository: "\(count) files are inside a git repository."
+        case .symlinks: "\(count) files have symlinks pointing at them; those links will stop working."
+        case .unknown: nil
+        }
+    }
+}
+
+extension RemovalRefusal {
+    /// Whether this refusal is about `model`: its digest or one of its copies.
+    public func concerns(_ model: Model) -> Bool {
+        path == model.digest || model.references.contains { $0.path == path }
+    }
+}

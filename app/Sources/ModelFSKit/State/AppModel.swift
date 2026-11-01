@@ -303,22 +303,24 @@ public final class AppModel {
 
     // MARK: Removing
 
-    /// The ways to remove `model`, each with its dry-run plan.
+    /// The ways to remove `models`, each with its dry-run plan.
     ///
-    /// One per app holding a copy, plus everywhere; a model only one app
-    /// holds has a single option, since removing its last copy removes the
-    /// stored copy too. Plans are fetched in parallel.
-    public func removalOptions(for model: Model) async -> [RemovalOption] {
-        guard let client else { return [] }
-        let scopes: [RemovalScope] = model.providers.count > 1
-            ? model.providers.map(RemovalScope.app) + [.everywhere]
+    /// For one model: one per app holding a copy, plus everywhere; a model
+    /// only one app holds has a single option, since removing its last copy
+    /// removes the stored copy too. Plans are fetched in parallel. For
+    /// several models: everywhere only, as one plan, so one confirmation
+    /// removes them all.
+    public func removalOptions(for models: [Model]) async -> [RemovalOption] {
+        guard let client, !models.isEmpty else { return [] }
+        let scopes: [RemovalScope] = models.count == 1 && models[0].providers.count > 1
+            ? models[0].providers.map(RemovalScope.app) + [.everywhere]
             : [.everywhere]
-        let digest = model.digest
+        let digests = models.map(\.digest)
         return await withTaskGroup(of: (Int, RemovalOption).self) { group in
             for (index, scope) in scopes.enumerated() {
                 group.addTask {
                     let plan = await Self.attempt { () async throws(EngineError) in
-                        try await client.planRemoval(digest: digest, scope: scope)
+                        try await client.planRemoval(digests: digests, scope: scope)
                     }
                     return (index, RemovalOption(scope: scope, plan: plan))
                 }
@@ -331,25 +333,30 @@ public final class AppModel {
         }
     }
 
+    /// The ways to remove `model`, each with its dry-run plan.
+    public func removalOptions(for model: Model) async -> [RemovalOption] {
+        await removalOptions(for: [model])
+    }
+
     /// Runs the removal `plan` describes, exactly as planned.
     ///
     /// Returns `nil` when another change is running or the folders are
     /// unknown; otherwise the engine's result, after the refresh it caused.
     /// A result with `.planChanged` carries the new plan to show instead.
     public func remove(
-        _ model: Model,
+        _ models: [Model],
         scope: RemovalScope,
         plan: RemovalPlan
     ) async -> Result<RemovalResult, EngineError>? {
-        guard mutation == nil, let client else { return nil }
+        guard mutation == nil, let client, !models.isEmpty else { return nil }
         guard refuseUnlessFoldersKnown() else { return nil }
-        activity = .removing(name: model.name)
+        activity = .removing(name: models.count == 1 ? models[0].name : "\(models.count) models")
         actionProblem = nil
-        let digest = model.digest
+        let digests = models.map(\.digest)
         let planID = plan.planID
         let removal = Task {
             let result = await Self.attempt { () async throws(EngineError) in
-                try await client.remove(digest: digest, scope: scope, expecting: planID)
+                try await client.remove(digests: digests, scope: scope, expecting: planID)
             }
             if case .failure(let error) = result {
                 actionProblem = error.localizedDescription
@@ -361,6 +368,15 @@ public final class AppModel {
         }
         mutation = Task { _ = await removal.value }
         return await removal.value
+    }
+
+    /// Runs the removal of one model `plan` describes, exactly as planned.
+    public func remove(
+        _ model: Model,
+        scope: RemovalScope,
+        plan: RemovalPlan
+    ) async -> Result<RemovalResult, EngineError>? {
+        await remove([model], scope: scope, plan: plan)
     }
 
     private func advance(with event: PassEvent) {

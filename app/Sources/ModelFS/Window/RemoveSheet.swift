@@ -2,17 +2,30 @@ import AppKit
 import ModelFSKit
 import SwiftUI
 
-/// Removing a model: each way to do it, with its plan, then the result.
+/// Removing models: each way to do it, with its plan, then the result.
 ///
 /// Plans come from dry runs, fetched in parallel. Confirming runs exactly
 /// the chosen plan (`--expect-plan`); if anything changed meanwhile, the
 /// engine changes nothing and the sheet shows the new plan instead. Once a
 /// removal starts it cannot be cancelled, so the sheet stays open until it
 /// ends.
+///
+/// Several models are removed everywhere, as one plan. The sheet lists
+/// each of them; leaving one out plans again without it.
 struct RemoveSheet: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
-    let target: Model
+    @State private var targets: [Model]
+
+    init(target: Model) {
+        _targets = State(initialValue: [target])
+    }
+
+    init(targets: [Model]) {
+        _targets = State(initialValue: targets)
+    }
+
+    private var isBatch: Bool { targets.count > 1 }
 
     private enum Phase: Equatable {
         case loading
@@ -29,9 +42,9 @@ struct RemoveSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Remove \(target.name)")
+                Text(isBatch ? "Remove \(targets.count) models" : "Remove \(targets.first?.name ?? "")")
                     .font(.title3.weight(.semibold))
-                Text("\(target.size.bytes) · \(target.providers.map(\.displayName).joined(separator: ", "))")
+                Text("\(totalSize.bytes) · \(providers.map(\.displayName).joined(separator: ", "))")
                     .foregroundStyle(.secondary)
             }
             if let notice {
@@ -53,20 +66,32 @@ struct RemoveSheet: View {
     private var content: some View {
         switch phase {
         case .loading:
-            ProgressView("Checking what removing it involves…")
+            ProgressView(isBatch ? "Checking what removing them involves…" : "Checking what removing it involves…")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .choosing, .removing:
             ScrollView {
-                VStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 10) {
                     ForEach(options) { option in
                         OptionCard(
                             option: option,
                             title: title(for: option.scope),
                             selected: selection == option.scope,
-                            retry: { Task { await load() } }
+                            retry: { Task { await load() } },
+                            blocked: isBatch && phase != .removing ? blocked : { _ in nil }
                         )
                         .onTapGesture { selection = option.scope }
                         .disabled(phase == .removing)
+                    }
+                    // The plan first: what it frees and what to know matter
+                    // more than the list, which can be long.
+                    if isBatch {
+                        Text("Models")
+                            .font(.headline)
+                            .padding(.top, 4)
+                        BatchList(
+                            targets: targets,
+                            leaveOut: phase == .removing ? nil : { leaveOut($0) }
+                        )
                     }
                 }
             }
@@ -112,16 +137,40 @@ struct RemoveSheet: View {
         return plan.refusals.isEmpty && !model.activity.isBusy
     }
 
+    private var totalSize: UInt64 {
+        targets.reduce(0) { $0 + $1.size }
+    }
+
+    private var providers: [Provider] {
+        Array(Set(targets.flatMap(\.providers))).sorted()
+    }
+
     private func title(for scope: RemovalScope) -> String {
         switch scope {
         case .app(let provider): "Remove from \(provider.displayName)"
-        case .everywhere: options.count == 1 ? "Remove from \(target.providers.first?.displayName ?? "the store")" : "Remove everywhere"
+        case .everywhere where isBatch: "Remove everywhere"
+        case .everywhere: options.count == 1 ? "Remove from \(providers.first?.displayName ?? "the store")" : "Remove everywhere"
+        }
+    }
+
+    /// The listed model a refusal is about, with a way to leave it out.
+    private func blocked(_ refusal: RemovalRefusal) -> (name: String, leaveOut: () -> Void)? {
+        guard let target = targets.first(where: refusal.concerns) else { return nil }
+        return (target.name, { leaveOut(target) })
+    }
+
+    private func leaveOut(_ target: Model) {
+        targets.removeAll { $0.id == target.id }
+        if targets.isEmpty {
+            dismiss()
+        } else {
+            Task { await load() }
         }
     }
 
     private func load() async {
         phase = .loading
-        options = await model.removalOptions(for: target)
+        options = await model.removalOptions(for: targets)
         if selection == nil || !options.contains(where: { $0.scope == selection }) {
             selection = options.first?.scope
         }
@@ -132,7 +181,7 @@ struct RemoveSheet: View {
         guard let scope = selection, let plan = selectedPlan else { return }
         phase = .removing
         notice = nil
-        let outcome = await model.remove(target, scope: scope, plan: plan)
+        let outcome = await model.remove(targets, scope: scope, plan: plan)
         switch outcome {
         case .none:
             notice = model.problem ?? "Another change is running; try again when it ends."
@@ -152,12 +201,58 @@ struct RemoveSheet: View {
     }
 }
 
+/// The models a batch removes, each with a way to leave it out.
+private struct BatchList: View {
+    let targets: [Model]
+    let leaveOut: ((Model) -> Void)?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(targets) { target in
+                HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(target.name)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Text(target.providers.map(\.displayName).joined(separator: ", "))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 8)
+                    Text(target.size.bytes)
+                        .font(.callout)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                    if let leaveOut {
+                        Button {
+                            leaveOut(target)
+                        } label: {
+                            Image(systemName: "minus.circle")
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Leave \(target.name) out of this removal.")
+                        .accessibilityLabel("Leave \(target.name) out")
+                    }
+                }
+                .padding(.vertical, 5)
+                .padding(.horizontal, 10)
+                .help(target.digest)
+                if target.id != targets.last?.id {
+                    Divider()
+                }
+            }
+        }
+        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
 /// One way to remove the model: what it frees, what it does, what blocks it.
 private struct OptionCard: View {
     let option: RemovalOption
     let title: String
     let selected: Bool
     let retry: () -> Void
+    var blocked: (RemovalRefusal) -> (name: String, leaveOut: () -> Void)? = { _ in nil }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -169,7 +264,7 @@ private struct OptionCard: View {
             }
             switch option.plan {
             case .success(let result):
-                PlanDetails(plan: result.plan, retry: retry)
+                PlanDetails(plan: result.plan, retry: retry, blocked: blocked)
             case .failure(let error):
                 Label(error.localizedDescription, systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.orange)
@@ -190,6 +285,7 @@ private struct OptionCard: View {
 private struct PlanDetails: View {
     let plan: RemovalPlan
     let retry: () -> Void
+    let blocked: (RemovalRefusal) -> (name: String, leaveOut: () -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -212,14 +308,14 @@ private struct PlanDetails: View {
                     .foregroundStyle(.secondary)
                     .help(plan.collateral.map(\.path).joined(separator: "\n"))
             }
-            ForEach(plan.notes) { note in
-                Label(note.message, systemImage: "info.circle")
+            ForEach(plan.noteSummaries) { note in
+                Label(note.text, systemImage: "info.circle")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .help(note.paths.joined(separator: "\n"))
             }
             ForEach(plan.refusals) { refusal in
-                RefusalRow(refusal: refusal, retry: retry)
+                RefusalRow(refusal: refusal, retry: retry, blocked: blocked(refusal))
             }
         }
     }
@@ -229,6 +325,8 @@ private struct PlanDetails: View {
 private struct RefusalRow: View {
     let refusal: RemovalRefusal
     let retry: () -> Void
+    /// In a batch: the model it blocks, and a way to leave it out.
+    let blocked: (name: String, leaveOut: () -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -245,6 +343,9 @@ private struct RefusalRow: View {
                     Button("Open Ollama") { openOllama() }
                 }
                 Button("Check again", action: retry)
+                if let blocked {
+                    Button("Leave out \(blocked.name)", action: blocked.leaveOut)
+                }
             }
             .controlSize(.small)
         }

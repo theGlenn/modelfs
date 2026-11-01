@@ -84,7 +84,13 @@ public struct EngineClient: Sendable {
 
     /// Plans removing `scope`'s copies of a model; changes nothing.
     public func planRemoval(digest: String, scope: RemovalScope) async throws(EngineError) -> RemovalResult {
-        try await EngineProcess.run(invocation(["rm", digest] + scope.arguments + ["--dry-run"]))
+        try await planRemoval(digests: [digest], scope: scope)
+    }
+
+    /// Plans removing `scope`'s copies of every model in `digests` as one
+    /// removal; changes nothing.
+    public func planRemoval(digests: [String], scope: RemovalScope) async throws(EngineError) -> RemovalResult {
+        try await EngineProcess.run(invocation(["rm"] + digests + scope.arguments + ["--dry-run"]))
     }
 
     /// Runs the removal planned as `planID`, if the plan is still the same.
@@ -93,13 +99,13 @@ public struct EngineClient: Sendable {
     /// the dry run. Not cancellable: once asked, the engine runs every step
     /// it can, in order.
     public func remove(
-        digest: String,
+        digests: [String],
         scope: RemovalScope,
         expecting planID: String,
         onEvent: @escaping @Sendable (PassEvent) -> Void = { _ in }
     ) async throws(EngineError) -> RemovalResult {
         try await EngineProcess.run(
-            invocation(["rm", digest] + scope.arguments + ["--expect-plan", planID]),
+            invocation(["rm"] + digests + scope.arguments + ["--expect-plan", planID]),
             acceptedStatuses: [0, 1, 3],
             onEvent: onEvent
         )

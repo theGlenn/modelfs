@@ -29,6 +29,13 @@ struct FakeEngine {
             fi
             exit 0 ;;
           daemon) tr -d '\n' < "$fixtures/daemon-status.json"; echo; exit 0 ;;
+          rm)
+            if printf '%s\n' "$@" | grep -qx -- --dry-run; then
+              tr -d '\n' < "$fixtures/rm-plan.json"; echo
+            else
+              tr -d '\n' < "$fixtures/rm-removed.json"; echo
+            fi
+            exit 0 ;;
           discover)
             if test "$FAKE_MODE" = "discover-wait"; then
               trap 'echo interrupted >> "$FAKE_LOG"; echo "{\"type\":\"error\",\"schema\":1,\"error\":{\"code\":\"cancelled\",\"message\":\"stopped\"}}"; exit 1' INT
